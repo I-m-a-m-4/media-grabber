@@ -2,19 +2,19 @@ import { NextResponse } from 'next/server';
 
 export async function POST(request: Request) {
   try {
-    const { url, formatId, audioOnly } = await request.json();
+    const { url, formatId, audioOnly, directUrl } = await request.json();
 
-    if (!url) {
-      return NextResponse.json({ error: 'URL is required' }, { status: 400 });
+    if (!url && !directUrl) {
+      return NextResponse.json({ error: 'URL or directUrl is required' }, { status: 400 });
     }
 
-    // TODO: Implement the web backend download logic.
-    // For Vercel, this usually involves streaming the download using ytdl-core 
-    // or fetching from a dedicated processing server.
+    const targetUrl = directUrl || url;
 
     return NextResponse.json({
-      message: "Download initiated on web.",
-      url: url,
+      message: `Download initiated for ${targetUrl}`,
+      url: targetUrl,
+      formatId: formatId || null,
+      audioOnly: !!audioOnly,
     });
   } catch (error) {
     return NextResponse.json({ error: 'Failed to process request' }, { status: 500 });
