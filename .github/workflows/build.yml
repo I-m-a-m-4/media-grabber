@@ -11,25 +11,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
-      - run: npm ci
-      - run: npm run build
-      
-  build-tauri:
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build Web App
+        run: npm run build
+
+  build-desktop-tauri:
     needs: build-web
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: 'macos-latest' # for macOS
+          - platform: 'macos-latest'
             args: ''
-          - platform: 'ubuntu-22.04' # for linux
+          - platform: 'ubuntu-22.04'
             args: ''
-          - platform: 'windows-latest' # for windows
+          - platform: 'windows-latest'
             args: ''
 
     runs-on: ${{ matrix.platform }}
@@ -40,32 +44,69 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
-      - name: Install dependencies (ubuntu only)
+      - name: Install Linux C/C++ & WebKit dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - name: install Rust stable
+      - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
-      - name: Install app dependencies
-        run: npm ci
+      - name: Install npm dependencies
+        run: npm install
 
-      - name: Build Web App for Tauri
+      - name: Build Web Export for Tauri
         run: npm run build:tauri
 
-      - uses: tauri-apps/tauri-action@v0
+      - name: Build Tauri Desktop (MSI, EXE, DMG, APP, DEB, AppImage)
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: app-v__VERSION__
           releaseName: 'Media Grabber v__VERSION__'
-          releaseBody: 'See the assets to download this version and install.'
+          releaseBody: 'Downloadable Desktop & Mobile Release Artifacts (.msi, .exe, .dmg, .apk, .aab, .deb)'
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+  build-android-tauri:
+    needs: build-web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Rust & Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: 'aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android'
+
+      - name: Install npm dependencies
+        run: npm install
+
+      - name: Build Web Export for Tauri
+        run: npm run build:tauri
+
+      - name: Upload Android Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: media-grabber-web-build
+          path: dist/
