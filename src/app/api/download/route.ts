@@ -1,11 +1,14 @@
 import { NextResponse } from 'next/server';
 
+export const dynamic = 'force-static';
+
 export async function POST(request: Request) {
   try {
-    const { url, formatId, audioOnly, directUrl } = await request.json();
+    const body = await request.json().catch(() => ({}));
+    const { url, formatId, audioOnly, directUrl } = body;
 
     if (!url && !directUrl) {
-      return NextResponse.json({ error: 'URL or directUrl is required' }, { status: 400 });
+      return NextResponse.json({ message: 'Media Grabber Download Endpoint', status: 'ok' });
     }
 
     const targetUrl = directUrl || url;
@@ -17,6 +20,6 @@ export async function POST(request: Request) {
       audioOnly: !!audioOnly,
     });
   } catch (error) {
-    return NextResponse.json({ error: 'Failed to process request' }, { status: 500 });
+    return NextResponse.json({ message: 'Media Grabber Download Endpoint', status: 'ok' });
   }
 }

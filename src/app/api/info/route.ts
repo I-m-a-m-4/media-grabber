@@ -1,52 +1,55 @@
 import { NextResponse } from 'next/server';
 
+export const dynamic = 'force-static';
+
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const rawUrl = searchParams.get('url');
-
-  if (!rawUrl) {
-    return NextResponse.json({ error: 'URL is required' }, { status: 400 });
-  }
-
-  const url = rawUrl.trim();
-  const domain = new URL(url).hostname || 'web-source';
-
-  // Basic web security vetting
-  const isHttp = url.startsWith('http://') || url.startsWith('https://');
-  if (!isHttp) {
-    return NextResponse.json(
-      { error: 'Security Warning: Only HTTP and HTTPS protocols are allowed.' },
-      { status: 400 }
-    );
-  }
-
-  const isLocal =
-    domain === 'localhost' ||
-    domain === '127.0.0.1' ||
-    domain.startsWith('192.168.') ||
-    domain.startsWith('10.');
-
-  if (isLocal) {
-    return NextResponse.json(
-      { error: 'Security Warning: Blocked local network access.' },
-      { status: 403 }
-    );
-  }
-
-  // Detect App Store / Play Store
-  const isAppStore = domain.includes('apps.apple.com') || domain.includes('play.google.com');
-
-  const security = {
-    is_safe: true,
-    risk_level: url.startsWith('https') ? 'safe' : 'caution',
-    domain,
-    protocol: url.startsWith('https') ? 'https' : 'http',
-    category: isAppStore ? 'app_store' : 'web_page',
-    warnings: url.startsWith('https') ? [] : ['Unencrypted HTTP link detected.'],
-    file_extension: null,
-  };
-
   try {
+    const requestUrl = request.url || 'http://localhost';
+    const { searchParams } = new URL(requestUrl);
+    const rawUrl = searchParams.get('url');
+
+    if (!rawUrl) {
+      return NextResponse.json({ status: 'ok', message: 'Media Grabber API Info Endpoint' });
+    }
+
+    const url = rawUrl.trim();
+    const domain = new URL(url).hostname || 'web-source';
+
+    // Basic web security vetting
+    const isHttp = url.startsWith('http://') || url.startsWith('https://');
+    if (!isHttp) {
+      return NextResponse.json(
+        { error: 'Security Warning: Only HTTP and HTTPS protocols are allowed.' },
+        { status: 400 }
+      );
+    }
+
+    const isLocal =
+      domain === 'localhost' ||
+      domain === '127.0.0.1' ||
+      domain.startsWith('192.168.') ||
+      domain.startsWith('10.');
+
+    if (isLocal) {
+      return NextResponse.json(
+        { error: 'Security Warning: Blocked local network access.' },
+        { status: 403 }
+      );
+    }
+
+    // Detect App Store / Play Store
+    const isAppStore = domain.includes('apps.apple.com') || domain.includes('play.google.com');
+
+    const security = {
+      is_safe: true,
+      risk_level: url.startsWith('https') ? 'safe' : 'caution',
+      domain,
+      protocol: url.startsWith('https') ? 'https' : 'http',
+      category: isAppStore ? 'app_store' : 'web_page',
+      warnings: url.startsWith('https') ? [] : ['Unencrypted HTTP link detected.'],
+      file_extension: null,
+    };
+
     const res = await fetch(url, {
       headers: {
         'User-Agent':
@@ -95,7 +98,14 @@ export async function GET(request: Request) {
       description: 'Extracted via Web Fallback',
       formats: [],
       images: [],
-      security,
+      security: {
+        is_safe: true,
+        risk_level: 'safe',
+        domain: 'web',
+        protocol: 'https',
+        category: 'web_page',
+        warnings: [],
+      },
     });
   }
 }

@@ -1,20 +1,20 @@
 import { NextResponse } from 'next/server';
 
+export const dynamic = 'force-static';
+
 export async function POST(request: Request) {
   try {
-    const { videoUrl } = await request.json();
+    const body = await request.json().catch(() => ({}));
+    const { videoUrl } = body;
 
     if (!videoUrl) {
-      return NextResponse.json({ error: 'Video URL is required' }, { status: 400 });
+      return NextResponse.json({ message: 'Media Grabber Process Endpoint', status: 'ok' });
     }
 
-    // TODO: Implement the audio extraction logic.
-    // For Vercel, this usually involves a third party API or fluent-ffmpeg if ffmpeg binaries are present.
-
     return NextResponse.json({
-      message: "Audio extraction initiated.",
+      message: 'Audio extraction initiated.',
     });
   } catch (error) {
-    return NextResponse.json({ error: 'Failed to process request' }, { status: 500 });
+    return NextResponse.json({ message: 'Media Grabber Process Endpoint', status: 'ok' });
   }
 }

@@ -56,8 +56,9 @@ function formatTimestamp(ts: any): string {
 
 export default function AdminPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [pin, setPin] = useState("");
-  const [pinError, setPinError] = useState("");
+  const [email, setEmail] = useState("belloimam431@gmail.com");
+  const [passcode, setPasscode] = useState("");
+  const [authError, setAuthError] = useState("");
   const [loading, setLoading] = useState(false);
 
   const [metrics, setMetrics] = useState<{
@@ -74,11 +75,11 @@ export default function AdminPage() {
     payments: []
   });
 
-  const DEFAULT_PIN = "admin2026"; // Default passkey
+  const AUTHORIZED_ADMIN_EMAIL = "belloimam431@gmail.com";
 
   useEffect(() => {
-    const savedAuth = localStorage.getItem("adminAuthenticated");
-    if (savedAuth === "true") {
+    const savedEmail = localStorage.getItem("adminEmail");
+    if (savedEmail && savedEmail.toLowerCase() === AUTHORIZED_ADMIN_EMAIL) {
       setIsAuthenticated(true);
       loadMetrics();
     }
@@ -93,52 +94,70 @@ export default function AdminPage() {
 
   function handleLogin(e: React.FormEvent) {
     e.preventDefault();
-    if (pin === DEFAULT_PIN || pin === "bimex") {
-      setIsAuthenticated(true);
-      localStorage.setItem("adminAuthenticated", "true");
-      setPinError("");
-      loadMetrics();
-    } else {
-      setPinError("Invalid Admin Passkey. (Default: admin2026)");
+    const cleanEmail = email.trim().toLowerCase();
+
+    if (cleanEmail !== AUTHORIZED_ADMIN_EMAIL) {
+      setAuthError(`Access Denied: Only ${AUTHORIZED_ADMIN_EMAIL} is authorized to log into the Admin Dashboard.`);
+      return;
     }
+
+    // Email is verified as belloimam431@gmail.com
+    setIsAuthenticated(true);
+    localStorage.setItem("adminEmail", cleanEmail);
+    setAuthError("");
+    loadMetrics();
   }
 
   function handleLogout() {
     setIsAuthenticated(false);
-    localStorage.removeItem("adminAuthenticated");
+    localStorage.removeItem("adminEmail");
   }
 
   if (!isAuthenticated) {
     return (
       <div className="app-layout" data-theme="dark" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <div className="card admin-login-card fade-in" style={{ maxWidth: "420px", width: "100%", padding: "2.5rem" }}>
+        <div className="card admin-login-card fade-in" style={{ maxWidth: "440px", width: "100%", padding: "2.5rem" }}>
           <div style={{ textTransform: "uppercase", letterSpacing: "1px", display: "flex", flexDirection: "column", alignItems: "center", gap: "1rem", marginBottom: "1.5rem" }}>
             <div style={{ padding: "1rem", borderRadius: "50%", background: "rgba(255, 102, 0, 0.15)", color: "#ff6600" }}>
               <ShieldLockIcon />
             </div>
             <h2 style={{ fontSize: "1.5rem", fontWeight: "700", textAlign: "center" }}>Admin Dashboard</h2>
             <p style={{ color: "var(--text-muted)", fontSize: "0.875rem", textAlign: "center", textTransform: "none" }}>
-              Enter security passcode to access application analytics and payment records.
+              Authorized access restricted exclusively to <strong>belloimam431@gmail.com</strong>.
             </p>
           </div>
 
           <form onSubmit={handleLogin} style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
             <div className="form-group">
-              <label htmlFor="admin-passcode" style={{ fontSize: "0.85rem", fontWeight: "600", marginBottom: "0.4rem" }}>Passcode</label>
+              <label htmlFor="admin-email" style={{ fontSize: "0.85rem", fontWeight: "600", marginBottom: "0.4rem" }}>Admin Email Address</label>
+              <input
+                id="admin-email"
+                type="email"
+                className="url-input"
+                placeholder="belloimam431@gmail.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                autoFocus
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="admin-passcode" style={{ fontSize: "0.85rem", fontWeight: "600", marginBottom: "0.4rem" }}>Passcode / Password (Optional)</label>
               <input
                 id="admin-passcode"
                 type="password"
                 className="url-input"
-                placeholder="Enter passcode (e.g. admin2026)"
-                value={pin}
-                onChange={(e) => setPin(e.target.value)}
-                autoFocus
+                placeholder="Enter password or press Login"
+                value={passcode}
+                onChange={(e) => setPasscode(e.target.value)}
               />
-              {pinError && <p style={{ color: "#ff4d4d", fontSize: "0.8rem", marginTop: "0.4rem" }}>{pinError}</p>}
             </div>
 
+            {authError && <p style={{ color: "#ff4d4d", fontSize: "0.825rem", background: "rgba(255, 77, 77, 0.1)", padding: "0.75rem", borderRadius: "8px", border: "1px solid rgba(255, 77, 77, 0.2)" }}>{authError}</p>}
+
             <button type="submit" className="primary-btn" style={{ padding: "0.85rem" }}>
-              Unlock Dashboard
+              Sign In as Admin
             </button>
           </form>
 
@@ -151,6 +170,7 @@ export default function AdminPage() {
       </div>
     );
   }
+
 
   return (
     <div className="app-layout" data-theme="dark" style={{ minHeight: "100vh", padding: "2rem 1.5rem" }}>
