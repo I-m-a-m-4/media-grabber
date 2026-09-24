@@ -116,33 +116,32 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* Header */
+/* Header & Top Navigation Bar */
 .app-header {
   display: flex;
   flex-direction: column;
   align-items: center;
   text-align: center;
   margin-bottom: 2rem;
-  position: relative;
+  width: 100%;
 }
 
-.header-top-bar {
+.top-navbar {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.25rem;
+}
+
+.header-brand {
   display: flex;
   align-items: center;
-  justify-content: center;
   gap: 0.75rem;
-  margin-bottom: 0.5rem;
-}
-
-.header-app-icon {
-  width: 44px;
-  height: 44px;
-  border-radius: 10px;
-  box-shadow: 0 4px 12px rgba(255, 102, 0, 0.3);
 }
 
 .title {
-  font-size: 2.2rem;
+  font-size: 1.8rem;
   font-weight: 700;
   letter-spacing: -0.02em;
   margin: 0;
@@ -151,10 +150,35 @@ body {
   -webkit-text-fill-color: transparent;
 }
 
+.top-actions-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.support-btn {
+  background: linear-gradient(135deg, #ff6600 0%, #ff8800 100%);
+  color: white;
+  border: none;
+  padding: 0.5rem 0.9rem;
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  box-shadow: 0 4px 10px rgba(255, 102, 0, 0.25);
+  transition: var(--transition);
+  font-family: inherit;
+}
+
+.support-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px rgba(255, 102, 0, 0.35);
+}
+
 .theme-toggle-btn {
-  position: absolute;
-  top: 0;
-  right: 0;
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
   color: var(--text-main);
@@ -180,6 +204,99 @@ body {
   margin: 0;
   font-size: 1.05rem;
 }
+
+/* Paste Shortcut Button */
+.input-actions {
+  position: absolute;
+  right: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.paste-btn {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid rgba(255, 102, 0, 0.3);
+  padding: 0.3rem 0.6rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+  font-family: inherit;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.paste-btn:hover {
+  background: var(--accent);
+  color: white;
+}
+
+/* Flutterwave Support Modal Styling */
+.support-header-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--accent);
+}
+
+.support-desc {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin: 0 0 1rem 0;
+}
+
+.amount-selector {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+
+.amount-btn {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-main);
+  padding: 0.75rem;
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+  font-family: inherit;
+}
+
+.amount-btn:hover {
+  border-color: var(--accent);
+}
+
+.amount-btn.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.sm-input {
+  padding: 0.75rem 1rem;
+  font-size: 0.9rem;
+}
+
+.flutterwave-btn {
+  width: 100%;
+  background: linear-gradient(135deg, #f59e0b 0%, #ff6600 100%);
+  color: white;
+  font-weight: 700;
+  padding: 1rem;
+}
+
+.flutterwave-btn:hover {
+  background: linear-gradient(135deg, #d97706 0%, #e65c00 100%);
+}
+
 
 /* Cards */
 .card {

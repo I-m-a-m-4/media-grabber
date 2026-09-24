@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Link from "next/link";
-
+import { useFlutterwave, closePaymentModal } from "flutterwave-react-v3";
 
 interface SecurityReport {
   is_safe: boolean;
@@ -49,6 +49,25 @@ interface HistoryItem {
   format: string;
   assetType: string;
 }
+
+// Brand Vector Logo
+const BrandLogoIcon = ({ size = 42 }: { size?: number }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width={size} height={size} style={{ borderRadius: "10px", flexShrink: 0 }}>
+    <defs>
+      <linearGradient id="orangeGradInline" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stopColor="#FF5500" />
+        <stop offset="100%" stopColor="#FF7700" />
+      </linearGradient>
+    </defs>
+    <rect x="16" y="16" width="480" height="480" rx="112" ry="112" fill="url(#orangeGradInline)" />
+    <g fill="none" stroke="#FFFFFF" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M 140 240 A 136 136 0 1 1 372 240" strokeWidth="32" />
+      <line x1="256" y1="120" x2="256" y2="304" strokeWidth="36" />
+      <polyline points="184,232 256,304 328,232" strokeWidth="36" />
+      <line x1="152" y1="376" x2="360" y2="376" strokeWidth="36" />
+    </g>
+  </svg>
+);
 
 // Icons
 const DownloadIcon = () => (
@@ -142,6 +161,19 @@ const MoonIcon = () => (
   </svg>
 );
 
+const HeartIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
+  </svg>
+);
+
+const ClipboardIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+    <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
+  </svg>
+);
+
 function formatBytes(bytes?: number, decimals = 2) {
   if (!bytes || bytes === 0) return "Unknown size";
   const k = 1024;
@@ -160,9 +192,86 @@ function formatDate(timestamp: number) {
   });
 }
 
+// Flutterwave Support Modal
+function SupportModal({ onClose }: { onClose: () => void }) {
+  const [amount, setAmount] = useState<number>(5);
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+
+  const config = {
+    public_key: process.env.NEXT_PUBLIC_FLUTTERWAVE_PUBLIC_KEY || "FLWPUBK-33162c3bb2bb347a6606f3e44645f1c9-X",
+    tx_ref: "MG_" + Date.now(),
+    amount: amount,
+    currency: "USD",
+    payment_options: "card,mobilemoney,ussd,banktransfer",
+    customer: {
+      email: email || "supporter@mediagrabber.app",
+      phone_number: "08000000000",
+      name: name || "Anonymous Supporter",
+    },
+    customizations: {
+      title: "Support Universal Media Grabber",
+      description: "Thank you for supporting open-source software development!",
+      logo: "https://bimex-group.vercel.app/logo.png",
+    },
+  };
+
+  const handleFlutterwavePayment = useFlutterwave(config);
+
+  return (
+    <div className="modal-overlay fade-in" onClick={onClose}>
+      <div className="modal-card card slide-down" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div className="support-header-title">
+            <HeartIcon />
+            <h2>Support Universal Media Grabber</h2>
+          </div>
+          <button className="icon-btn close-modal-btn" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body">
+          <p className="support-desc">
+            Universal Media Grabber is free, open source, and privacy-first. Your support helps maintain sidecar binaries, scraper updates, and new features!
+          </p>
+          <div className="amount-selector">
+            <button className={`amount-btn ${amount === 5 ? "active" : ""}`} onClick={() => setAmount(5)}>☕ $5 Coffee</button>
+            <button className={`amount-btn ${amount === 10 ? "active" : ""}`} onClick={() => setAmount(10)}>🚀 $10 Supporter</button>
+            <button className={`amount-btn ${amount === 25 ? "active" : ""}`} onClick={() => setAmount(25)}>💖 $25 Sponsor</button>
+          </div>
+          <div className="form-group">
+            <label htmlFor="supporter-name">Your Name (Optional)</label>
+            <input id="supporter-name" type="text" className="url-input sm-input" placeholder="e.g. Bello Imam" value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div className="form-group">
+            <label htmlFor="supporter-email">Your Email (Optional)</label>
+            <input id="supporter-email" type="email" className="url-input sm-input" placeholder="e.g. supporter@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button
+            className="primary-btn flutterwave-btn"
+            onClick={() => {
+              handleFlutterwavePayment({
+                callback: (response) => {
+                  console.log(response);
+                  closePaymentModal();
+                  onClose();
+                },
+                onClose: () => {},
+              });
+            }}
+          >
+            💳 Pay ${amount} via Flutterwave
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [legalModal, setLegalModal] = useState<"privacy" | "terms" | null>(null);
+  const [showSupportModal, setShowSupportModal] = useState(false);
   const [url, setUrl] = useState("");
 
   const [browserCookie, setBrowserCookie] = useState("");
@@ -171,11 +280,33 @@ export default function App() {
 
   const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
 
+  // Active view tab inside Media Card: "video" | "images"
+  const [mediaTab, setMediaTab] = useState<"video" | "images">("video");
+
+  // App states
+  const [loading, setLoading] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [successMsg, setSuccessMsg] = useState("");
+
+  // User selections
+  const [selectedFormat, setSelectedFormat] = useState<string>("");
+  const [audioOnly, setAudioOnly] = useState(false);
+
+  // History state
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+
+  const inputRef = useRef<HTMLInputElement>(null);
+
   // Load Theme & History on mount
   useEffect(() => {
     const savedTheme = localStorage.getItem("mediaGrabberTheme") as "dark" | "light" | null;
     if (savedTheme) {
       setTheme(savedTheme);
+      document.documentElement.setAttribute("data-theme", savedTheme);
+    } else {
+      document.documentElement.setAttribute("data-theme", "dark");
     }
     const savedHistory = localStorage.getItem("mediaGrabberHistory");
     if (savedHistory) {
@@ -198,53 +329,23 @@ export default function App() {
     setTheme((prev) => (prev === "dark" ? "light" : "dark"));
   }
 
-
-  // Active view tab inside Media Card: "video" | "images"
-  const [mediaTab, setMediaTab] = useState<"video" | "images">("video");
-
-  // App states
-  const [loading, setLoading] = useState(false);
-  const [downloading, setDownloading] = useState(false);
-  const [downloadingId, setDownloadingId] = useState<string | null>(null);
-  const [errorMsg, setErrorMsg] = useState("");
-  const [successMsg, setSuccessMsg] = useState("");
-
-  // User selections
-  const [selectedFormat, setSelectedFormat] = useState<string>("");
-  const [audioOnly, setAudioOnly] = useState(false);
-
-  // History state
-  const [history, setHistory] = useState<HistoryItem[]>([]);
-
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  // Load history on mount
-  useEffect(() => {
-    const savedHistory = localStorage.getItem("mediaGrabberHistory");
-    if (savedHistory) {
-      try {
-        setHistory(JSON.parse(savedHistory));
-      } catch (e) {
-        console.error("Failed to parse history", e);
+  async function handlePasteFromClipboard() {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        setUrl(text.trim());
+        setErrorMsg("");
+        inputRef.current?.focus();
       }
+    } catch (err) {
+      console.error("Clipboard access error", err);
     }
-    inputRef.current?.focus();
-  }, []);
-
-  // Save history on change
-  useEffect(() => {
-    localStorage.setItem("mediaGrabberHistory", JSON.stringify(history));
-  }, [history]);
-
-  useEffect(() => {
-    if (errorMsg) setErrorMsg("");
-    if (successMsg) setSuccessMsg("");
-  }, [url, audioOnly, selectedFormat, browserCookie]);
+  }
 
   async function handleFetchInfo(e: React.FormEvent) {
     e.preventDefault();
     if (!url.trim()) {
-      setErrorMsg("Please enter a valid URL.");
+      setErrorMsg("Please paste or type a URL first.");
       inputRef.current?.focus();
       return;
     }
@@ -386,23 +487,33 @@ export default function App() {
       {/* Main Content Area */}
       <main className="main-content">
         <header className="app-header">
-          <button
-            className="theme-toggle-btn"
-            onClick={toggleTheme}
-            title={`Switch to ${theme === "dark" ? "Light" : "Dark"} Mode`}
-            aria-label="Toggle Theme"
-          >
-            {theme === "dark" ? <SunIcon /> : <MoonIcon />}
-          </button>
-          <div className="header-top-bar">
-            <img src="/icon.svg" alt="Universal Media Grabber Logo" className="header-app-icon" />
-            <h1 className="title">Universal Media & Asset Grabber</h1>
+          <div className="top-navbar">
+            <div className="header-brand">
+              <BrandLogoIcon size={42} />
+              <h1 className="title">Universal Media Grabber</h1>
+            </div>
+            <div className="top-actions-group">
+              <button
+                className="support-btn"
+                onClick={() => setShowSupportModal(true)}
+                title="Support Universal Media Grabber"
+              >
+                <HeartIcon /> Support Us
+              </button>
+              <button
+                className="theme-toggle-btn"
+                onClick={toggleTheme}
+                title={`Switch to ${theme === "dark" ? "Light" : "Dark"} Mode`}
+                aria-label="Toggle Theme"
+              >
+                {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+              </button>
+            </div>
           </div>
           <p className="subtitle">
             Download videos, audio tracks, App Store screenshots, and high-res media from any link.
           </p>
         </header>
-
 
         <section className="search-section card">
           <div className="search-tabs">
@@ -434,15 +545,25 @@ export default function App() {
                     aria-label="Media URL"
                     disabled={loading || downloading}
                   />
-                  <button
-                    type="button"
-                    className="icon-btn settings-toggle"
-                    onClick={() => setShowSettings(!showSettings)}
-                    aria-label="Toggle Settings"
-                    title="Advanced Settings"
-                  >
-                    <SettingsIcon />
-                  </button>
+                  <div className="input-actions">
+                    <button
+                      type="button"
+                      className="paste-btn"
+                      onClick={handlePasteFromClipboard}
+                      title="Paste URL from Clipboard"
+                    >
+                      <ClipboardIcon /> Paste
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn settings-toggle"
+                      onClick={() => setShowSettings(!showSettings)}
+                      aria-label="Toggle Settings"
+                      title="Advanced Settings"
+                    >
+                      <SettingsIcon />
+                    </button>
+                  </div>
                 </div>
 
                 <button
@@ -532,7 +653,7 @@ export default function App() {
           <div className="empty-state">
             <div className="empty-icon">🌐</div>
             <h3>Universal Link & Media Downloader</h3>
-            <p>Paste any URL — YouTube, Apple App Store, Google Play, Instagram, TikTok, or web page.</p>
+            <p>Paste any URL — YouTube, Apple App Store, Google Play, Microsoft Store, Instagram, TikTok, or web page.</p>
           </div>
         )}
 
@@ -758,8 +879,10 @@ export default function App() {
             • Universal Media Grabber
           </p>
         </footer>
-
       </main>
+
+      {/* Support Flutterwave Modal */}
+      {showSupportModal && <SupportModal onClose={() => setShowSupportModal(false)} />}
 
       {/* Modal Dialog for Desktop & In-App Viewing */}
       {legalModal && (
@@ -807,4 +930,3 @@ export default function App() {
     </div>
   );
 }
-
