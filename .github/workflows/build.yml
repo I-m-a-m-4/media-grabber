@@ -6,6 +6,9 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-web:
     runs-on: ubuntu-latest
@@ -59,6 +62,21 @@ jobs:
       - name: Install npm dependencies
         run: npm install
 
+      - name: Download Target Sidecar Binaries (yt-dlp)
+        shell: bash
+        run: |
+          mkdir -p src-tauri/bin
+          if [ "${{ matrix.platform }}" = "macos-latest" ]; then
+            curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos -o src-tauri/bin/yt-dlp-aarch64-apple-darwin
+            curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos -o src-tauri/bin/yt-dlp-x86_64-apple-darwin
+            chmod +x src-tauri/bin/yt-dlp-aarch64-apple-darwin src-tauri/bin/yt-dlp-x86_64-apple-darwin
+          elif [ "${{ matrix.platform }}" = "ubuntu-22.04" ]; then
+            curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o src-tauri/bin/yt-dlp-x86_64-unknown-linux-gnu
+            chmod +x src-tauri/bin/yt-dlp-x86_64-unknown-linux-gnu
+          elif [ "${{ matrix.platform }}" = "windows-latest" ]; then
+            curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe -o src-tauri/bin/yt-dlp-x86_64-pc-windows-msvc.exe
+          fi
+
       - name: Build Web Export for Tauri
         run: npm run build:tauri
 
@@ -73,6 +91,13 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Upload Desktop Installer Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-bundles-${{ matrix.platform }}
+          path: src-tauri/target/release/bundle/
 
   build-android-tauri:
     needs: build-web
