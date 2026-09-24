@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Link from "next/link";
 import { useFlutterwave, closePaymentModal } from "flutterwave-react-v3";
+import { initAnonymousUser, recordPaymentTransaction, auth } from "../lib/firebase";
 
 interface SecurityReport {
   is_safe: boolean;
@@ -251,8 +252,22 @@ function SupportModal({ onClose }: { onClose: () => void }) {
             className="primary-btn flutterwave-btn"
             onClick={() => {
               handleFlutterwavePayment({
-                callback: (response) => {
-                  console.log(response);
+                callback: async (response) => {
+                  console.log("Payment response:", response);
+                  try {
+                    await recordPaymentTransaction({
+                      uid: auth?.currentUser?.uid || "anonymous",
+                      email: email || (response as any).customer?.email || "supporter@mediagrabber.app",
+                      name: name || (response as any).customer?.name || "Anonymous Supporter",
+                      amount: amount,
+                      currency: "USD",
+                      status: (response as any).status || "successful",
+                      tx_ref: config.tx_ref,
+                      transaction_id: (response as any).transaction_id || (response as any).flw_ref || ""
+                    });
+                  } catch (e) {
+                    console.error("Failed to store payment record:", e);
+                  }
                   closePaymentModal();
                   onClose();
                 },
@@ -299,8 +314,10 @@ export default function App() {
 
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Load Theme & History on mount
+  // Load Firebase Auth, Theme & History on mount
   useEffect(() => {
+    initAnonymousUser();
+
     const savedTheme = localStorage.getItem("mediaGrabberTheme") as "dark" | "light" | null;
     if (savedTheme) {
       setTheme(savedTheme);
@@ -493,6 +510,9 @@ export default function App() {
               <h1 className="title">Universal Media Grabber</h1>
             </div>
             <div className="top-actions-group">
+              <Link href="/admin" className="theme-toggle-btn" style={{ textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "0.4rem", padding: "0.5rem 0.8rem", fontSize: "0.85rem", fontWeight: "600" }} title="Admin Analytics & Dashboard">
+                ⚙️ Admin
+              </Link>
               <button
                 className="support-btn"
                 onClick={() => setShowSupportModal(true)}
