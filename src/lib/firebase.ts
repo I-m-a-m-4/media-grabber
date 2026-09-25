@@ -3,6 +3,8 @@ import {
   getAuth, 
   signInAnonymously, 
   onAuthStateChanged,
+  GoogleAuthProvider,
+  signInWithPopup,
   User 
 } from "firebase/auth";
 import { 
@@ -104,29 +106,36 @@ export async function syncUserProfile(user: User) {
   if (!db) return;
   try {
     const userRef = doc(db, "users", user.uid);
-    const snap = await getDoc(userRef);
-
     const platform = typeof window !== "undefined" && (window as any).__TAURI__ ? "Tauri Desktop" : "Web Browser";
     const userAgent = typeof navigator !== "undefined" ? navigator.userAgent : "Unknown";
 
-    if (!snap.exists()) {
-      await setDoc(userRef, {
-        uid: user.uid,
-        isAnonymous: user.isAnonymous,
-        firstSeenAt: serverTimestamp(),
-        lastSeenAt: serverTimestamp(),
-        platform,
-        userAgent
-      });
-    } else {
-      await setDoc(userRef, {
-        lastSeenAt: serverTimestamp(),
-        platform,
-        userAgent
-      }, { merge: true });
+    try {
+      const snap = await getDoc(userRef);
+      if (!snap.exists()) {
+        await setDoc(userRef, {
+          uid: user.uid,
+          isAnonymous: user.isAnonymous,
+          firstSeenAt: serverTimestamp(),
+          lastSeenAt: serverTimestamp(),
+          platform,
+          userAgent
+        });
+      } else {
+        await setDoc(userRef, {
+          lastSeenAt: serverTimestamp(),
+          platform,
+          userAgent
+        }, { merge: true });
+      }
+    } catch (innerErr: any) {
+      if (innerErr?.code === "permission-denied") {
+        // Silently ignore permission denied for anonymous user profile sync
+        return;
+      }
+      console.warn("User profile sync skipped:", innerErr?.message || innerErr);
     }
   } catch (err) {
-    console.warn("Could not sync user profile to Firestore (check Firestore Rules if needed):", err);
+    // Silent catch fallback
   }
 }
 
@@ -180,5 +189,19 @@ export async function fetchAdminMetrics() {
   } catch (err) {
     console.error("Error fetching admin metrics:", err);
     return { totalUsers: 0, totalPayments: 0, totalRevenue: 0, users: [], payments: [] };
+  }
+}
+
+/**
+ * Google Auth for Admin Login
+ */
+export async function signInWithGoogle(): Promise<User | null> {
+  try {
+    const provider = new GoogleAuthProvider();
+    const result = await signInWithPopup(auth, provider);
+    return result.user;
+  } catch (error) {
+    console.error("Google Auth error:", error);
+    throw error;
   }
 }
