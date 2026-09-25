@@ -8,12 +8,21 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 function makeAbsoluteUrl(relativeUrl: string, baseUrl: string): string {
+  if (!relativeUrl) return '';
+  if (relativeUrl.startsWith('data:') || relativeUrl.startsWith('blob:') || relativeUrl.includes('iVBORw0KGgo')) {
+    return '';
+  }
+  if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://') || relativeUrl.startsWith('//')) {
+    return relativeUrl.startsWith('//') ? `https:${relativeUrl}` : relativeUrl;
+  }
   try {
     return new URL(relativeUrl, baseUrl).href;
   } catch (e) {
     return relativeUrl;
   }
 }
+
+
 
 async function getYtDlpInfo(targetUrl: string, browserCookie?: string) {
   try {
@@ -156,7 +165,14 @@ function sanitizeMediaInfo(info: any, targetUrl: string) {
   };
 
   if (Array.isArray(info.images)) {
-    info.images = info.images.map((img: any, idx: number) => {
+    info.images = info.images.filter((img: any) => {
+      if (!img || !img.direct_url) return false;
+      const urlStr = String(img.direct_url);
+      if (urlStr.includes('iVBOR') || urlStr.includes('data:image') || urlStr.includes('%2FiVBOR') || urlStr.length < 10) {
+        return false;
+      }
+      return true;
+    }).map((img: any, idx: number) => {
       let cleanUrl = wrapUrl(img.direct_url);
       let id = img.format_id || `img_${idx + 1}`;
       if (seenIds.has(id)) {
@@ -422,8 +438,8 @@ async function getInstagramFallbackInfo(targetUrl: string) {
         try {
           const res = await fetch(fUrl, {
             headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
             },
             cache: 'no-store',
           });
@@ -441,10 +457,10 @@ async function getInstagramFallbackInfo(targetUrl: string) {
             const ogDesc = html.match(/meta\s+(?:property|name)="og:description"\s+content="([^"]+)"/i)?.[1];
             if (ogDesc && !description) description = ogDesc;
 
-            const rawUrlMatches = html.match(/(https?:\\\/\\\/[^\s"'\\]+|https?:\/\/[^\s"']+)/g) || [];
+            const rawUrlMatches = html.match(/https?:\\?\/\\?\/[^\s"'\\]*(?:scontent|fbcdn)[^\s"'\\]*/gi) || [];
             for (const raw of rawUrlMatches) {
-              let u = raw.replace(/\\\//g, '/').replace(/\\u0026/g, '&').replace(/&amp;/g, '&');
-              if ((u.includes('cdninstagram.com') || u.includes('fbcdn.net')) && !u.includes('rsrc.php') && u.length > 30) {
+              let u = raw.replace(/\\\/|\\u002f/gi, '/').replace(/\\u0026/gi, '&').replace(/&amp;/gi, '&');
+              if ((u.includes('scontent') || u.includes('fbcdn.net')) && !u.includes('rsrc.php') && !u.includes('static.cdninstagram.com') && u.length > 40) {
                 addImage(u, isProfile ? `Instagram Feed Media ${images.length + 1}` : `Instagram Post Media ${images.length + 1}`);
               }
             }
