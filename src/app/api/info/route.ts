@@ -318,11 +318,11 @@ async function getInstagramFallbackInfo(targetUrl: string) {
     const addImage = (rawImgUrl: string, note: string) => {
       if (!rawImgUrl) return;
       let absUrl = rawImgUrl
-        .replaceAll('\\/', '/')
-        .replaceAll('\\u0026', '&')
-        .replaceAll('&amp;', '&')
-        .replaceAll('\\u00253D', '=')
-        .replaceAll('\\u002526', '&');
+        .replace(/\\\//g, '/')
+        .replace(/\\u0026/g, '&')
+        .replace(/&amp;/g, '&')
+        .replace(/\\u00253D/gi, '=')
+        .replace(/\\u002526/gi, '&');
 
       if (absUrl.startsWith('//')) absUrl = `https:${absUrl}`;
       if (seenUrls.has(absUrl)) return;
@@ -443,7 +443,7 @@ async function getInstagramFallbackInfo(targetUrl: string) {
 
             const rawUrlMatches = html.match(/(https?:\\\/\\\/[^\s"'\\]+|https?:\/\/[^\s"']+)/g) || [];
             for (const raw of rawUrlMatches) {
-              let u = raw.replaceAll('\\/', '/').replaceAll('\\u0026', '&').replaceAll('&amp;', '&');
+              let u = raw.replace(/\\\//g, '/').replace(/\\u0026/g, '&').replace(/&amp;/g, '&');
               if ((u.includes('cdninstagram.com') || u.includes('fbcdn.net')) && !u.includes('rsrc.php') && u.length > 30) {
                 addImage(u, isProfile ? `Instagram Feed Media ${images.length + 1}` : `Instagram Post Media ${images.length + 1}`);
               }

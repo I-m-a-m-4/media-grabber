@@ -346,14 +346,7 @@ function formatBytes(bytes?: number, decimals = 2) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + " " + sizes[i];
 }
 
-function formatDate(timestamp: number) {
-  return new Date(timestamp).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
+
 
 // Flutterwave Support Modal
 function SupportModal({ onClose }: { onClose: () => void }) {
