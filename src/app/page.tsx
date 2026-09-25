@@ -1242,8 +1242,8 @@ export default function App() {
                   </button>
                 </div>
                 <div className="images-grid">
-                  {mediaInfo.images.map((imgItem) => (
-                    <div key={imgItem.format_id} className="image-card">
+                  {mediaInfo.images.map((imgItem, idx) => (
+                    <div key={imgItem.format_id ? `${imgItem.format_id}_${idx}` : `img_key_${idx}`} className="image-card">
                       <div
                         className="image-preview-wrapper"
                         onClick={() => setPreviewImage(imgItem)}

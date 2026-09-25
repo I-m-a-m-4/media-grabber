@@ -139,6 +139,61 @@ async function getYtDlpInfo(targetUrl: string, browserCookie?: string) {
   }
 }
 
+function sanitizeMediaInfo(info: any, targetUrl: string) {
+  if (!info) return info;
+  const isInstagram = targetUrl.includes('instagram.com') || (info.site_name && info.site_name.toLowerCase().includes('instagram'));
+
+  const seenIds = new Set<string>();
+
+  const wrapUrl = (u?: string) => {
+    if (!u) return u;
+    if (isInstagram || u.includes('cdninstagram.com') || u.includes('fbcdn.net')) {
+      if (!u.startsWith('/api/download')) {
+        return `/api/download?directUrl=${encodeURIComponent(u)}`;
+      }
+    }
+    return u;
+  };
+
+  if (Array.isArray(info.images)) {
+    info.images = info.images.map((img: any, idx: number) => {
+      let cleanUrl = wrapUrl(img.direct_url);
+      let id = img.format_id || `img_${idx + 1}`;
+      if (seenIds.has(id)) {
+        id = `${id}_${idx + 1}`;
+      }
+      seenIds.add(id);
+
+      return {
+        ...img,
+        format_id: id,
+        direct_url: cleanUrl,
+      };
+    });
+  }
+
+  if (Array.isArray(info.formats)) {
+    info.formats = info.formats.map((fmt: any, idx: number) => {
+      let id = fmt.format_id || `fmt_${idx + 1}`;
+      if (seenIds.has(id)) {
+        id = `${id}_${idx + 1}`;
+      }
+      seenIds.add(id);
+
+      return {
+        ...fmt,
+        format_id: id,
+      };
+    });
+  }
+
+  if (info.thumbnail) {
+    info.thumbnail = wrapUrl(info.thumbnail);
+  }
+
+  return info;
+}
+
 // Dedicated TikTok Fallback Resolver
 async function getTikTokFallbackInfo(targetUrl: string) {
   try {
@@ -554,34 +609,36 @@ export async function GET(request: Request) {
     if (isMediaStream || !isAppStore) {
       const ytData = await getYtDlpInfo(url, browserCookie);
       if (ytData && ((ytData.formats && ytData.formats.length > 0) || (ytData.images && ytData.images.length > 0))) {
-        if (ytData.images) {
-          ytData.images = ytData.images.map((img: any) => {
-            if (img.direct_url && (img.direct_url.includes('cdninstagram.com') || img.direct_url.includes('fbcdn.net'))) {
-              return { ...img, direct_url: `/api/download?directUrl=${encodeURIComponent(img.direct_url)}` };
-            }
-            return img;
-          });
-        }
-        return NextResponse.json({
-          ...ytData,
-          security: {
-            ...security,
-            category: 'media_stream',
-          },
-        });
+        return NextResponse.json(
+          sanitizeMediaInfo(
+            {
+              ...ytData,
+              security: {
+                ...security,
+                category: 'media_stream',
+              },
+            },
+            url
+          )
+        );
       }
 
       // Dedicated TikTok Fallback Extractor
       if (domain.includes('tiktok.com') || url.includes('tiktok.com')) {
         const tiktokData = await getTikTokFallbackInfo(url);
         if (tiktokData && (tiktokData.formats?.length > 0 || tiktokData.images?.length > 0)) {
-          return NextResponse.json({
-            ...tiktokData,
-            security: {
-              ...security,
-              category: 'media_stream',
-            },
-          });
+          return NextResponse.json(
+            sanitizeMediaInfo(
+              {
+                ...tiktokData,
+                security: {
+                  ...security,
+                  category: 'media_stream',
+                },
+              },
+              url
+            )
+          );
         }
       }
 
@@ -589,13 +646,18 @@ export async function GET(request: Request) {
       if (domain.includes('instagram.com') || url.includes('instagram.com')) {
         const instagramData = await getInstagramFallbackInfo(url);
         if (instagramData) {
-          return NextResponse.json({
-            ...instagramData,
-            security: {
-              ...security,
-              category: 'media_stream',
-            },
-          });
+          return NextResponse.json(
+            sanitizeMediaInfo(
+              {
+                ...instagramData,
+                security: {
+                  ...security,
+                  category: 'media_stream',
+                },
+              },
+              url
+            )
+          );
         }
       }
     }
@@ -838,18 +900,23 @@ export async function GET(request: Request) {
       primaryThumbnail = faviconUrl;
     }
 
-    return NextResponse.json({
-      title,
-      description,
-      extracted_text: extractedText || 'No extra text content extracted.',
-      thumbnail: primaryThumbnail,
-      duration: null,
-      uploader,
-      site_name,
-      formats: [],
-      images,
-      security,
-    });
+    return NextResponse.json(
+      sanitizeMediaInfo(
+        {
+          title,
+          description,
+          extracted_text: extractedText || 'No extra text content extracted.',
+          thumbnail: primaryThumbnail,
+          duration: null,
+          uploader,
+          site_name,
+          formats: [],
+          images,
+          security,
+        },
+        url
+      )
+    );
   } catch (err: any) {
     return NextResponse.json({
       title: 'Web Media Asset',
