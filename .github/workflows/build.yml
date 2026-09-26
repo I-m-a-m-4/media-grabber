@@ -118,6 +118,8 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
 
       - name: Install Rust & Android targets
         uses: dtolnay/rust-toolchain@stable
