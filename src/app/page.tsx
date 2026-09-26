@@ -463,8 +463,18 @@ function HistoryItemCard({ item, removeHistoryItem, handleOpenDownloadsFolder, r
 
 function isTauriApp(): boolean {
   if (typeof window === "undefined") return false;
-  // @ts-ignore
-  return "__TAURI__" in window || "__TAURI_INTERNALS__" in window;
+  const w = window as any;
+  return (
+    "__TAURI__" in w ||
+    "__TAURI_INTERNALS__" in w ||
+    "__TAURI_POST_MESSAGE__" in w ||
+    !!w.__TAURI_INTERNALS__ ||
+    !!w.__TAURI_INVOKE__ ||
+    (typeof w.location !== "undefined" && (
+      w.location.origin?.startsWith("tauri://") ||
+      w.location.hostname === "tauri.localhost"
+    ))
+  );
 }
 
 export default function App() {
@@ -618,11 +628,20 @@ export default function App() {
       } else {
         const queryUrl = `/api/info?url=${encodeURIComponent(url.trim())}${browserCookie ? `&browser=${encodeURIComponent(browserCookie)}` : ""}`;
         const res = await fetch(queryUrl);
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.error || "Failed to fetch from web API");
+        const textResponse = await res.text();
+        let parsedData: any = null;
+        try {
+          parsedData = JSON.parse(textResponse);
+        } catch {
+          if (!res.ok) {
+            throw new Error(`Server returned status ${res.status}. Please check your link or use the Desktop/Mobile app.`);
+          }
+          throw new Error("Received an unexpected HTML response from server instead of JSON.");
         }
-        info = await res.json();
+        if (!res.ok) {
+          throw new Error(parsedData?.error || `Failed to fetch media details (${res.status})`);
+        }
+        info = parsedData;
       }
 
       if (info) {
@@ -732,8 +751,15 @@ export default function App() {
               directUrl: directUrl || null,
             }),
           });
-          if (!res.ok) throw new Error("Web download request failed");
-          const data = await res.json();
+          const textRes = await res.text();
+          let data: any = null;
+          try {
+            data = JSON.parse(textRes);
+          } catch {
+            if (!res.ok) throw new Error(`Download server returned error (${res.status})`);
+            throw new Error("Received an unexpected HTML response from download server.");
+          }
+          if (!res.ok) throw new Error(data?.error || "Web download request failed");
           resMsg = data.message || "Download completed successfully!";
         }
       }
