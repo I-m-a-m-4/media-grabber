@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { downloadDir } from "@tauri-apps/api/path";
-import { open } from "@tauri-apps/plugin-opener";
+import { openPath } from "@tauri-apps/plugin-opener";
 
 import Link from "next/link";
 import { useFlutterwave, closePaymentModal } from "flutterwave-react-v3";
@@ -230,34 +230,11 @@ const UserIcon = () => (
   </svg>
 );
 
-const CloudDownloadIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-    <polyline points="7 10 12 15 17 10"></polyline>
-    <line x1="12" y1="15" x2="12" y2="3"></line>
-  </svg>
-);
-
 const CheckCircleIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2ecc71" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
     <polyline points="22 4 12 14.01 9 11.01"></polyline>
   </svg>
-);
-
-const CircularProgress = ({ progress }: { progress: number }) => (
-  <div style={{ position: "relative", width: "20px", height: "20px", display: "flex", alignItems: "center", justifyContent: "center" }}>
-    <svg width="20" height="20" viewBox="0 0 20 20">
-      <circle cx="10" cy="10" r="8" fill="none" stroke="#333" strokeWidth="2" />
-      <circle cx="10" cy="10" r="8" fill="none" stroke="#FFB800" strokeWidth="2"
-        strokeDasharray="50.26"
-        strokeDashoffset={50.26 - (50.26 * progress) / 100}
-        transform="rotate(-90 10 10)"
-        style={{ transition: "stroke-dashoffset 0.5s ease" }}
-      />
-    </svg>
-    <span style={{ position: "absolute", fontSize: "0.45rem", fontWeight: "bold", color: "#FFB800" }}>{progress}</span>
-  </div>
 );
 
 const PlayIcon = () => (
@@ -856,7 +833,7 @@ export default function App() {
       // @ts-ignore
       if (typeof window !== "undefined" && "__TAURI__" in window) {
         const dDir = await downloadDir();
-        await open(dDir);
+        await openPath(dDir);
       } else {
         setSuccessMsg("Check your Downloads folder for the downloaded files.");
       }
