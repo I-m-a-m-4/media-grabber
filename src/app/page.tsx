@@ -453,12 +453,18 @@ function HistoryItemCard({ item, removeHistoryItem, handleOpenDownloadsFolder, r
           <CheckCircleIcon />
         </div>
         
-        {typeof window !== "undefined" && "__TAURI__" in window && (
+        {isTauriApp() && (
           <button className="icon-btn" style={{ background: 'none', border: '1px solid #333', borderRadius: '4px', color: '#999', cursor: 'pointer', padding: '0.35rem' }} onClick={() => handleOpenDownloadsFolder()} title="Open Folder"><FolderIcon /></button>
         )}
       </div>
     </li>
   );
+}
+
+function isTauriApp(): boolean {
+  if (typeof window === "undefined") return false;
+  // @ts-ignore
+  return "__TAURI__" in window || "__TAURI_INTERNALS__" in window;
 }
 
 export default function App() {
@@ -607,8 +613,7 @@ export default function App() {
 
     try {
       let info: MediaInfo;
-      // @ts-ignore
-      if (typeof window !== "undefined" && "__TAURI__" in window) {
+      if (isTauriApp()) {
         info = await invoke<MediaInfo>("get_media_info", { url: url.trim() });
       } else {
         const queryUrl = `/api/info?url=${encodeURIComponent(url.trim())}${browserCookie ? `&browser=${encodeURIComponent(browserCookie)}` : ""}`;
@@ -683,8 +688,7 @@ export default function App() {
 
     try {
       let resMsg = "";
-      // @ts-ignore
-      if (typeof window !== "undefined" && "__TAURI__" in window) {
+      if (isTauriApp()) {
         resMsg = await invoke<string>("download_media", {
           url: url.trim(),
           formatId: fmtToUse || null,
@@ -830,8 +834,7 @@ export default function App() {
 
   async function handleOpenDownloadsFolder() {
     try {
-      // @ts-ignore
-      if (typeof window !== "undefined" && "__TAURI__" in window) {
+      if (isTauriApp()) {
         const dDir = await downloadDir();
         await openPath(dDir);
       } else {
