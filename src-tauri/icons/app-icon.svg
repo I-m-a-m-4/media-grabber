@@ -1,26 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <defs>
-    <linearGradient id="orangeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#FF5500"/>
-      <stop offset="100%" stop-color="#FF7700"/>
-    </linearGradient>
-    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
-      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000000" flood-opacity="0.2"/>
-    </filter>
-  </defs>
-  <!-- Orange Squircle Background -->
-  <rect x="16" y="16" width="480" height="480" rx="112" ry="112" fill="url(#orangeGrad)"/>
-  
-  <!-- White Universal Media Grabber Emblem -->
-  <g fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" filter="url(#shadow)">
-    <!-- Media Ring Arc -->
-    <path d="M 140 240 A 136 136 0 1 1 372 240" stroke-width="32" />
-    
-    <!-- Downward Download Arrow -->
-    <line x1="256" y1="120" x2="256" y2="304" stroke-width="36" />
-    <polyline points="184,232 256,304 328,232" stroke-width="36" />
-    
-    <!-- Tray Base -->
-    <line x1="152" y1="376" x2="360" y2="376" stroke-width="36" />
-  </g>
+<svg width="342" height="342" viewBox="0 0 342 342" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g clip-path="url(#clip0_719_39)">
+<path d="M268.523 0H73.4766C32.8966 0 0 32.8966 0 73.4766V268.523C0 309.103 32.8966 342 73.4766 342H268.523C309.103 342 342 309.103 342 268.523V73.4766C342 32.8966 309.103 0 268.523 0Z" fill="url(#paint0_linear_719_39)"/>
+<path d="M106.875 173.672C86.8359 173.672 73.4766 156.973 73.4766 136.934C73.4766 116.895 90.1758 100.195 110.215 100.195C120.234 80.1562 143.613 66.7969 171 66.7969C203.73 66.7969 230.449 86.8359 237.129 116.895C257.168 116.895 273.867 133.594 273.867 153.633C273.867 173.672 257.168 187.031 237.129 187.031" stroke="white" stroke-width="14.6953" stroke-linecap="round"/>
+<path d="M171 126.914V240.469V126.914ZM120.234 193.711L171 243.809L221.766 193.711" fill="#FD5610"/>
+<path d="M171 126.914V240.469M120.234 193.711L171 243.809L221.766 193.711" stroke="white" stroke-width="22.7109" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+<defs>
+<linearGradient id="paint0_linear_719_39" x1="0" y1="0" x2="342" y2="342" gradientUnits="userSpaceOnUse">
+<stop stop-color="#FF9000"/>
+<stop offset="1" stop-color="#FF3300"/>
+</linearGradient>
+<clipPath id="clip0_719_39">
+<rect width="342" height="342" fill="white"/>
+</clipPath>
+</defs>
 </svg>

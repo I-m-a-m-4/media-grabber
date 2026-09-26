@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { downloadDir } from "@tauri-apps/api/path";
+import { open } from "@tauri-apps/plugin-opener";
 
 import Link from "next/link";
 import { useFlutterwave, closePaymentModal } from "flutterwave-react-v3";
@@ -439,26 +440,6 @@ function SupportModal({ onClose }: { onClose: () => void }) {
 }
 
 function HistoryItemCard({ item, removeHistoryItem, handleOpenDownloadsFolder, reFetchHistoryItem }: { item: HistoryItem; removeHistoryItem: (id: string) => void; handleOpenDownloadsFolder: () => void; reFetchHistoryItem: (url: string) => void }) {
-  const [progress, setProgress] = useState(item.progress || (item.status === 'completed' ? 100 : Math.floor(Math.random() * 20) + 1));
-  const [status, setStatus] = useState(item.status);
-
-  useEffect(() => {
-    if (status === 'downloading') {
-      const interval = setInterval(() => {
-        setProgress(p => {
-          const next = p + Math.floor(Math.random() * 8) + 2;
-          if (next >= 100) {
-            setStatus('completed');
-            clearInterval(interval);
-            return 100;
-          }
-          return next;
-        });
-      }, 1000);
-      return () => clearInterval(interval);
-    }
-  }, [status]);
-
   return (
     <li className="history-item" style={{ display: 'flex', alignItems: 'center', backgroundColor: '#1E1E1E', padding: '0.75rem', borderRadius: '8px', gap: '1rem', border: '1px solid #333' }}>
       <div className="history-thumbnail-wrapper" style={{ width: '130px', height: '75px', flexShrink: 0, borderRadius: '6px', overflow: 'hidden', backgroundColor: '#000' }}>
@@ -485,24 +466,19 @@ function HistoryItemCard({ item, removeHistoryItem, handleOpenDownloadsFolder, r
         </div>
       </div>
       
-      <div className="history-actions" style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+      <div className="history-actions" style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
         <button className="icon-btn" style={{ background: 'none', border: '1px solid #333', borderRadius: '4px', color: '#999', cursor: 'pointer', padding: '0.35rem' }} onClick={() => removeHistoryItem(item.id)} title="Remove"><TrashIcon /></button>
         <button className="icon-btn" style={{ background: 'none', border: '1px solid #333', borderRadius: '4px', color: '#999', cursor: 'pointer', padding: '0.35rem' }} onClick={() => { navigator.clipboard.writeText(item.url); }} title="Copy Link"><LinkIcon /></button>
         <button className="icon-btn" style={{ background: 'none', border: '1px solid #333', borderRadius: '4px', color: '#999', cursor: 'pointer', padding: '0.35rem' }} onClick={() => reFetchHistoryItem(item.url)} title="Retry"><RefreshIcon /></button>
-        <button className="icon-btn" style={{ background: 'none', border: '1px solid #333', borderRadius: '4px', color: '#999', cursor: 'pointer', padding: '0.35rem' }} onClick={() => handleOpenDownloadsFolder()} title="Play"><PlayIcon /></button>
+        <button className="icon-btn" style={{ background: 'none', border: '1px solid #333', borderRadius: '4px', color: '#999', cursor: 'pointer', padding: '0.35rem' }} onClick={() => window.open(item.url, '_blank')} title="Open Original Link"><PlayIcon /></button>
         
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.35rem' }}>
-          <button className="icon-btn" style={{ background: 'none', border: '1px solid #333', borderRadius: '4px', color: '#999', cursor: 'pointer', padding: '0.35rem' }} title={status === 'downloading' ? 'Downloading...' : 'Completed'} onClick={() => { if(status === 'downloading') setStatus('completed'); }}>
-            <CloudDownloadIcon />
-          </button>
-          {status === 'downloading' ? (
-             <CircularProgress progress={progress} />
-          ) : (
-             <CheckCircleIcon />
-          )}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.35rem', margin: '0 0.25rem' }}>
+          <CheckCircleIcon />
         </div>
         
-        <button className="icon-btn" style={{ background: 'none', border: '1px solid #333', borderRadius: '4px', color: '#999', cursor: 'pointer', padding: '0.35rem' }} onClick={() => handleOpenDownloadsFolder()} title="Open Folder"><FolderIcon /></button>
+        {typeof window !== "undefined" && "__TAURI__" in window && (
+          <button className="icon-btn" style={{ background: 'none', border: '1px solid #333', borderRadius: '4px', color: '#999', cursor: 'pointer', padding: '0.35rem' }} onClick={() => handleOpenDownloadsFolder()} title="Open Folder"><FolderIcon /></button>
+        )}
       </div>
     </li>
   );
@@ -798,8 +774,8 @@ export default function App() {
         resolution: selectedFmtForMeta?.resolution || "HD 720p 1280x720",
         size: selectedFmtForMeta?.filesize ? formatBytes(selectedFmtForMeta.filesize) : (audioOnly ? "4.2 MB" : "Unknown Size"),
         uploader: mediaInfo.uploader || "User",
-        status: "downloading",
-        progress: 0,
+        status: "completed",
+        progress: 100,
       };
 
       setHistory((prev) => {
