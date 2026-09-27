@@ -866,9 +866,9 @@ export default function App() {
       } else {
         setSuccessMsg("Check your Downloads folder for the downloaded files.");
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      setErrorMsg("Failed to open downloads folder.");
+      setErrorMsg(`Failed to open downloads folder: ${error?.message || error}`);
     }
   }
 

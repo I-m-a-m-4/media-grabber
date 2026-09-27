@@ -29,6 +29,8 @@ async function getYtDlpInfo(targetUrl: string, browserCookie?: string) {
     const args = [
       '--dump-json',
       '--no-warnings',
+      '--socket-timeout',
+      '8',
       '--user-agent',
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     ];
@@ -39,7 +41,7 @@ async function getYtDlpInfo(targetUrl: string, browserCookie?: string) {
 
     args.push(targetUrl);
 
-    const { stdout } = await execFileAsync('yt-dlp', args, { maxBuffer: 15 * 1024 * 1024, timeout: 25000 });
+    const { stdout } = await execFileAsync('yt-dlp', args, { maxBuffer: 15 * 1024 * 1024, timeout: 12000 });
 
     if (!stdout || !stdout.trim()) return null;
     const parsed = JSON.parse(stdout.trim().split('\n')[0]);
@@ -141,8 +143,15 @@ async function getYtDlpInfo(targetUrl: string, browserCookie?: string) {
       images,
     };
   } catch (err: any) {
-    if (!targetUrl.includes('instagram.com')) {
-      console.warn('yt-dlp extraction note:', err?.message || err);
+    const msg = String(err?.message || err || '');
+    if (
+      !targetUrl.includes('instagram.com') &&
+      !msg.includes('Unsupported URL') &&
+      !msg.includes('ERROR: [generic]') &&
+      !msg.includes('Read timed out') &&
+      !msg.includes('HTTPSConnectionPool')
+    ) {
+      console.warn('yt-dlp extraction note:', msg);
     }
     return null;
   }
@@ -784,6 +793,7 @@ export async function GET(request: Request) {
     if (images.length < 3 || title === `${domain} Asset`) {
       try {
         const res = await fetch(url, {
+          signal: AbortSignal.timeout(6000),
           headers: {
             'User-Agent':
               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -902,8 +912,12 @@ export async function GET(request: Request) {
           description = description || paragraphs[0];
           extractedText = paragraphs.join('\n\n');
         }
-      } catch (e) {
-        console.error('HTML Scraper fallback error:', e);
+      } catch (e: any) {
+        if (e?.name === 'TimeoutError' || e?.code === 'UND_ERR_CONNECT_TIMEOUT' || e?.message?.includes('timeout') || e?.cause?.code === 'UND_ERR_CONNECT_TIMEOUT') {
+          console.warn(`[HTML Scraper] Network timeout fetching metadata for ${domain}`);
+        } else {
+          console.warn(`[HTML Scraper] Network issue fetching HTML fallback for ${domain}:`, e?.message || e);
+        }
       }
     }
 
