@@ -103,7 +103,7 @@ async function handleDownloadRequest(
       (directUrl && directUrl.includes('googlevideo.com'));
 
     // 1. YouTube/Video stream download via yt-dlp temp file stream
-    if (isYtStream && (!directUrl || directUrl.includes('googlevideo.com'))) {
+    if (isYtStream && (!directUrl || directUrl.includes('googlevideo.com') || pageUrl.includes('twitter.com') || pageUrl.includes('x.com'))) {
       const ytResult = await downloadWithYtDlp(pageUrl, formatId, audioOnly);
       if (ytResult && ytResult.buffer.length > 0) {
         const ext = ytResult.ext || (audioOnly ? 'mp3' : 'mp4');
@@ -128,6 +128,12 @@ async function handleDownloadRequest(
 
     // 2. Standard image/asset binary proxy fetch
     let fetchUrl = targetUrl;
+    
+    // Unwrap if the URL was proxied for UI display
+    if (fetchUrl.startsWith('/api/download?directUrl=')) {
+      fetchUrl = decodeURIComponent(fetchUrl.split('directUrl=')[1].split('&')[0]);
+    }
+    
     if (fetchUrl.startsWith('//')) {
       fetchUrl = `https:${fetchUrl}`;
     }

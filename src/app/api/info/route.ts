@@ -339,6 +339,7 @@ async function getInstagramFallbackInfo(targetUrl: string) {
     const images: any[] = [];
     const formats: any[] = [];
     const seenUrls = new Set<string>();
+    const seenFilenames = new Set<string>();
 
     const addImage = (rawImgUrl: string, note: string) => {
       if (!rawImgUrl) return;
@@ -352,6 +353,16 @@ async function getInstagramFallbackInfo(targetUrl: string) {
       if (absUrl.startsWith('//')) absUrl = `https:${absUrl}`;
       if (seenUrls.has(absUrl)) return;
       seenUrls.add(absUrl);
+
+      try {
+        const urlObj = new URL(absUrl);
+        const segments = urlObj.pathname.split('/');
+        const filename = segments[segments.length - 1];
+        if (filename && filename.includes('.jpg')) {
+          if (seenFilenames.has(filename)) return;
+          seenFilenames.add(filename);
+        }
+      } catch (e) {}
 
       // Filter static assets and domain-only URLs
       if (
