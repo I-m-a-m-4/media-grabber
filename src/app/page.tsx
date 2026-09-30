@@ -1304,7 +1304,7 @@ export default function App() {
             {/* Tab 2: Text & Overview Details Tab */}
             {mediaTab === "text" && (
               <div className="text-details-container fade-in" style={{ display: "flex", flexDirection: "column", gap: "1rem", padding: "0.5rem 0" }}>
-                <div style={{ background: "rgba(0, 0, 0, 0.3)", padding: "1.25rem", borderRadius: "12px", border: "1px solid var(--border-subtle)" }}>
+                <div className="text-overview-card">
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem", marginBottom: "0.75rem" }}>
                     <h3 style={{ fontSize: "1.1rem", fontWeight: "700", margin: 0, flex: 1 }}>{mediaInfo.title}</h3>
                     <button
