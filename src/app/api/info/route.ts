@@ -24,13 +24,174 @@ function makeAbsoluteUrl(relativeUrl: string, baseUrl: string): string {
 
 
 
+function extractYouTubeVideoId(targetUrl: string): string | null {
+  if (!targetUrl) return null;
+  const patterns = [
+    /(?:youtu\.be\/|v\/|u\/\w\/|embed\/|shorts\/|live\/|watch\?v=|watch\?.+&v=)([\w-]{11})/i,
+    /youtube\.com\/clip\/([\w-]+)/i,
+    /^([\w-]{11})$/,
+  ];
+  for (const pattern of patterns) {
+    const match = targetUrl.match(pattern);
+    if (match && match[1]) return match[1];
+  }
+  return null;
+}
+
+// Dedicated YouTube Fallback Resolver (Works zero-auth on any cloud host/serverless environment)
+async function getYouTubeFallbackInfo(targetUrl: string) {
+  try {
+    const videoId = extractYouTubeVideoId(targetUrl);
+    if (!videoId) return null;
+
+    let title = 'YouTube Video';
+    let uploader = 'YouTube Creator';
+    let description = '';
+
+    // 1. Official YouTube oEmbed API (Zero credentials needed, fast, resilient on cloud/Vercel)
+    try {
+      const oembedRes = await fetch(
+        `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`,
+        {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept': 'application/json',
+          },
+          signal: AbortSignal.timeout(5000),
+          cache: 'no-store',
+        }
+      );
+      if (oembedRes.ok) {
+        const oembedData = await oembedRes.json().catch(() => null);
+        if (oembedData) {
+          if (oembedData.title) title = oembedData.title;
+          if (oembedData.author_name) uploader = `${oembedData.author_name} (YouTube)`;
+        }
+      }
+    } catch (e) {
+      console.warn('[YouTube Fallback] oEmbed error:', e);
+    }
+
+    // 2. High-Res Thumbnail Assets (Google CDN i.ytimg.com direct assets)
+    const images: any[] = [
+      {
+        format_id: 'yt_thumb_maxres',
+        ext: 'jpg',
+        resolution: '1280x720 (MaxRes HD)',
+        vcodec: 'none',
+        acodec: 'none',
+        direct_url: `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
+        asset_type: 'image',
+        note: 'HD Video Poster Thumbnail (1080p/720p)',
+      },
+      {
+        format_id: 'yt_thumb_hq',
+        ext: 'jpg',
+        resolution: '480x360 (HQ)',
+        vcodec: 'none',
+        acodec: 'none',
+        direct_url: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+        asset_type: 'image',
+        note: 'High Quality Video Thumbnail',
+      },
+      {
+        format_id: 'yt_thumb_mq',
+        ext: 'jpg',
+        resolution: '320x180 (MQ)',
+        vcodec: 'none',
+        acodec: 'none',
+        direct_url: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`,
+        asset_type: 'image',
+        note: 'Medium Video Thumbnail',
+      },
+      {
+        format_id: 'yt_thumb_sd',
+        ext: 'jpg',
+        resolution: '640x480 (SD)',
+        vcodec: 'none',
+        acodec: 'none',
+        direct_url: `https://i.ytimg.com/vi/${videoId}/sddefault.jpg`,
+        asset_type: 'image',
+        note: 'Standard Definition Video Thumbnail',
+      },
+    ];
+
+    // 3. Fallback Stream Formats (Routed through /api/download engine)
+    const canonicalUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    const formats: any[] = [
+      {
+        format_id: 'b',
+        ext: 'mp4',
+        resolution: 'Best Available HD (MP4)',
+        fps: 60,
+        vcodec: 'h264',
+        acodec: 'aac',
+        direct_url: `/api/download?url=${encodeURIComponent(canonicalUrl)}&formatId=b`,
+        asset_type: 'video',
+        note: 'Best Available Video + Audio (1080p / 720p)',
+      },
+      {
+        format_id: '22',
+        ext: 'mp4',
+        resolution: '720p HD (MP4)',
+        fps: 30,
+        vcodec: 'h264',
+        acodec: 'aac',
+        direct_url: `/api/download?url=${encodeURIComponent(canonicalUrl)}&formatId=22`,
+        asset_type: 'video',
+        note: 'High Definition 720p MP4 Video',
+      },
+      {
+        format_id: '18',
+        ext: 'mp4',
+        resolution: '360p Standard (MP4)',
+        fps: 30,
+        vcodec: 'h264',
+        acodec: 'aac',
+        direct_url: `/api/download?url=${encodeURIComponent(canonicalUrl)}&formatId=18`,
+        asset_type: 'video',
+        note: 'Standard Definition 360p MP4 Video',
+      },
+      {
+        format_id: 'audio_best',
+        ext: 'mp3',
+        resolution: 'Audio Only (Extract MP3)',
+        fps: null,
+        vcodec: 'none',
+        acodec: 'mp3',
+        direct_url: `/api/download?url=${encodeURIComponent(canonicalUrl)}&formatId=audio_best&audioOnly=true`,
+        asset_type: 'audio',
+        note: 'Original Audio Track (MP3 Format)',
+      },
+    ];
+
+    return {
+      title,
+      description: description || `YouTube Video (${videoId})`,
+      extracted_text: `YouTube Video: ${title}\nUploader: ${uploader}\nWatch URL: ${canonicalUrl}`,
+      thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+      duration: null,
+      uploader,
+      site_name: 'YouTube',
+      formats,
+      images,
+    };
+  } catch (err) {
+    console.error('[YouTube Fallback] Error resolving YouTube info:', err);
+    return null;
+  }
+}
+
 async function getYtDlpInfo(targetUrl: string, browserCookie?: string) {
   try {
     const args = [
       '--dump-json',
       '--no-warnings',
       '--socket-timeout',
-      '8',
+      '10',
+      '--extractor-args',
+      'youtube:player_client=android,web',
       '--user-agent',
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     ];
@@ -41,7 +202,7 @@ async function getYtDlpInfo(targetUrl: string, browserCookie?: string) {
 
     args.push(targetUrl);
 
-    const { stdout } = await execFileAsync('yt-dlp', args, { maxBuffer: 15 * 1024 * 1024, timeout: 12000 });
+    const { stdout } = await execFileAsync('yt-dlp', args, { maxBuffer: 15 * 1024 * 1024, timeout: 15000 });
 
     if (!stdout || !stdout.trim()) return null;
     const parsed = JSON.parse(stdout.trim().split('\n')[0]);
@@ -96,6 +257,37 @@ async function getYtDlpInfo(targetUrl: string, browserCookie?: string) {
       });
     });
 
+    if (targetUrl.includes('youtube.com') || targetUrl.includes('youtu.be')) {
+      const hasBest = formats.some((f) => f.format_id === 'b' || f.resolution?.includes('1080'));
+      if (!hasBest) {
+        formats.unshift({
+          format_id: 'b',
+          ext: 'mp4',
+          resolution: 'Best Available HD (MP4)',
+          fps: 60,
+          vcodec: 'h264',
+          acodec: 'aac',
+          direct_url: `/api/download?url=${encodeURIComponent(targetUrl)}&formatId=b`,
+          asset_type: 'video',
+          note: 'Best Available High Definition Video (1080p / 720p)',
+        });
+      }
+      const hasAudio = formats.some((f) => f.asset_type === 'audio' || f.format_id === 'audio_best');
+      if (!hasAudio) {
+        formats.push({
+          format_id: 'audio_best',
+          ext: 'mp3',
+          resolution: 'Audio Only (Extract MP3)',
+          fps: null,
+          vcodec: 'none',
+          acodec: 'mp3',
+          direct_url: `/api/download?url=${encodeURIComponent(targetUrl)}&formatId=audio_best&audioOnly=true`,
+          asset_type: 'audio',
+          note: 'Extracted Original Audio (MP3 Format)',
+        });
+      }
+    }
+
     const images: any[] = [];
     const seenImgUrls = new Set<string>();
 
@@ -114,21 +306,29 @@ async function getYtDlpInfo(targetUrl: string, browserCookie?: string) {
     }
 
     if (Array.isArray(parsed.thumbnails)) {
-      parsed.thumbnails.forEach((t: any, idx: number) => {
-        if (t.url && !seenImgUrls.has(t.url)) {
-          seenImgUrls.add(t.url);
-          images.push({
-            format_id: `img_thumb_${idx + 1}`,
-            ext: 'jpg',
-            resolution: t.width && t.height ? `${t.width}x${t.height}` : 'Thumbnail',
-            vcodec: 'none',
-            acodec: 'none',
-            direct_url: t.url,
-            asset_type: 'image',
-            note: `Video Thumbnail ${idx + 1}`,
-          });
-        }
-      });
+      parsed.thumbnails
+        .filter((t: any) => {
+          if (!t.url) return false;
+          const u = String(t.url);
+          if (u.includes('storyboard') || u.includes('/sb/') || u.includes('sqp=')) return false;
+          return true;
+        })
+        .slice(-6)
+        .forEach((t: any) => {
+          if (t.url && !seenImgUrls.has(t.url)) {
+            seenImgUrls.add(t.url);
+            images.push({
+              format_id: `img_thumb_${images.length + 1}`,
+              ext: 'jpg',
+              resolution: t.width && t.height ? `${t.width}x${t.height}` : 'Thumbnail',
+              vcodec: 'none',
+              acodec: 'none',
+              direct_url: t.url,
+              asset_type: 'image',
+              note: `Video Thumbnail ${images.length + 1}`,
+            });
+          }
+        });
     }
 
     return {
@@ -950,6 +1150,25 @@ export async function GET(request: Request) {
         );
       }
 
+      // Dedicated YouTube Fallback Extractor (Run if yt-dlp failed, timed out, or blocked)
+      if (domain.includes('youtube.com') || domain.includes('youtu.be') || url.includes('youtube.com') || url.includes('youtu.be')) {
+        const youtubeData = await getYouTubeFallbackInfo(url);
+        if (youtubeData && (youtubeData.formats?.length > 0 || youtubeData.images?.length > 0)) {
+          return NextResponse.json(
+            sanitizeMediaInfo(
+              {
+                ...youtubeData,
+                security: {
+                  ...security,
+                  category: 'media_stream',
+                },
+              },
+              url
+            )
+          );
+        }
+      }
+
       // Dedicated TikTok Fallback Extractor
       if (domain.includes('tiktok.com') || url.includes('tiktok.com')) {
         const tiktokData = await getTikTokFallbackInfo(url);
@@ -1246,9 +1465,15 @@ export async function GET(request: Request) {
     if (!primaryThumbnail && images.length > 0) {
       primaryThumbnail = images[0].direct_url;
     } else if (!primaryThumbnail) {
-      const faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=128`;
-      addImage(faviconUrl, 'Website Favicon / Icon');
-      primaryThumbnail = faviconUrl;
+      const ytId = extractYouTubeVideoId(url);
+      if (ytId) {
+        primaryThumbnail = `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`;
+        addImage(primaryThumbnail, 'YouTube Video Thumbnail');
+      } else {
+        const faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=128`;
+        addImage(faviconUrl, 'Website Favicon / Icon');
+        primaryThumbnail = faviconUrl;
+      }
     }
 
     return NextResponse.json(

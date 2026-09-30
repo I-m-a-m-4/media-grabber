@@ -435,43 +435,43 @@ function SupportModal({ onClose }: { onClose: () => void }) {
 
 function HistoryItemCard({ item, removeHistoryItem, handleOpenDownloadsFolder, reFetchHistoryItem }: { item: HistoryItem; removeHistoryItem: (id: string) => void; handleOpenDownloadsFolder: () => void; reFetchHistoryItem: (url: string) => void }) {
   return (
-    <li className="history-item" style={{ display: 'flex', alignItems: 'center', backgroundColor: '#1E1E1E', padding: '0.75rem', borderRadius: '8px', gap: '1rem', border: '1px solid #333' }}>
-      <div className="history-thumbnail-wrapper" style={{ width: '130px', height: '75px', flexShrink: 0, borderRadius: '6px', overflow: 'hidden', backgroundColor: '#000' }}>
+    <li className="history-item">
+      <div className="history-thumbnail-wrapper">
         {item.thumbnail ? (
-          <img src={item.thumbnail} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          <img src={item.thumbnail} alt="" className="history-thumbnail" />
         ) : (
-          <div className="history-thumbnail-placeholder" style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666', fontSize: '0.8rem' }}>No Img</div>
+          <div className="history-thumbnail-placeholder">No Img</div>
         )}
       </div>
       
-      <div className="history-details" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-        <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: '500', color: '#EAEAEA', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.title}</h4>
+      <div className="history-details">
+        <h4 title={item.title}>{item.title}</h4>
         
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', fontSize: '0.75rem', color: '#888' }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><ClockIcon /> {item.duration || "00:00:00"}</span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><MonitorIcon /> {item.resolution || item.format}</span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><FileIcon /> {item.size || "Unknown Size"}</span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><UserIcon /> {item.uploader}</span>
+        <div className="history-meta">
+          <span><ClockIcon /> {item.duration || "00:00:00"}</span>
+          <span><MonitorIcon /> {item.resolution || item.format}</span>
+          <span><FileIcon /> {item.size || "Unknown Size"}</span>
+          <span><UserIcon /> {item.uploader}</span>
         </div>
         
-        <div style={{ fontSize: '0.75rem', color: '#666', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-          <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '300px' }}>{item.url}</span>
+        <div className="history-url-row">
+          <span className="history-link" title={item.url}>{item.url}</span>
           <SearchIcon />
         </div>
       </div>
       
-      <div className="history-actions" style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-        <button className="icon-btn" style={{ background: 'none', border: '1px solid #333', borderRadius: '4px', color: '#999', cursor: 'pointer', padding: '0.35rem' }} onClick={() => removeHistoryItem(item.id)} title="Remove"><TrashIcon /></button>
-        <button className="icon-btn" style={{ background: 'none', border: '1px solid #333', borderRadius: '4px', color: '#999', cursor: 'pointer', padding: '0.35rem' }} onClick={() => { navigator.clipboard.writeText(item.url); }} title="Copy Link"><LinkIcon /></button>
-        <button className="icon-btn" style={{ background: 'none', border: '1px solid #333', borderRadius: '4px', color: '#999', cursor: 'pointer', padding: '0.35rem' }} onClick={() => reFetchHistoryItem(item.url)} title="Retry"><RefreshIcon /></button>
-        <button className="icon-btn" style={{ background: 'none', border: '1px solid #333', borderRadius: '4px', color: '#999', cursor: 'pointer', padding: '0.35rem' }} onClick={() => window.open(item.url, '_blank')} title="Open Original Link"><PlayIcon /></button>
+      <div className="history-actions">
+        <button className="icon-btn history-action-btn" onClick={() => removeHistoryItem(item.id)} title="Remove"><TrashIcon /></button>
+        <button className="icon-btn history-action-btn" onClick={() => { navigator.clipboard.writeText(item.url); }} title="Copy Link"><LinkIcon /></button>
+        <button className="icon-btn history-action-btn" onClick={() => reFetchHistoryItem(item.url)} title="Retry"><RefreshIcon /></button>
+        <button className="icon-btn history-action-btn" onClick={() => window.open(item.url, '_blank')} title="Open Original Link"><PlayIcon /></button>
         
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.35rem', margin: '0 0.25rem' }}>
+        <div className="history-status-indicator">
           <CheckCircleIcon />
         </div>
         
         {isTauriApp() && (
-          <button className="icon-btn" style={{ background: 'none', border: '1px solid #333', borderRadius: '4px', color: '#999', cursor: 'pointer', padding: '0.35rem' }} onClick={() => handleOpenDownloadsFolder()} title="Open Folder"><FolderIcon /></button>
+          <button className="icon-btn history-action-btn" onClick={() => handleOpenDownloadsFolder()} title="Open Folder"><FolderIcon /></button>
         )}
       </div>
     </li>
@@ -1088,7 +1088,7 @@ export default function App() {
                   <p>No downloads yet. Your recent downloads will appear here.</p>
                 </div>
               ) : (
-                <ul className="history-list" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0', margin: '0', listStyle: 'none' }}>
+                <ul className="history-list">
                   {history.map((item) => (
                     <HistoryItemCard 
                       key={item.id} 
@@ -1201,20 +1201,6 @@ export default function App() {
 
             {/* Asset Category View Switcher Tabs */}
             <div className="asset-type-tabs">
-              {mediaInfo.images && mediaInfo.images.length > 0 && (
-                <button
-                  className={`asset-tab-btn ${mediaTab === "images" ? "active" : ""}`}
-                  onClick={() => setMediaTab("images")}
-                >
-                  <ImageIcon /> Images & Screenshots ({mediaInfo.images.length})
-                </button>
-              )}
-              <button
-                className={`asset-tab-btn ${mediaTab === "text" ? "active" : ""}`}
-                onClick={() => setMediaTab("text")}
-              >
-                📝 Text & Overview
-              </button>
               {mediaInfo.formats && mediaInfo.formats.length > 0 && (
                 <button
                   className={`asset-tab-btn ${mediaTab === "video" ? "active" : ""}`}
@@ -1223,6 +1209,20 @@ export default function App() {
                   <VideoIcon /> Streams & Formats ({mediaInfo.formats.length})
                 </button>
               )}
+              {mediaInfo.images && mediaInfo.images.length > 0 && (
+                <button
+                  className={`asset-tab-btn ${mediaTab === "images" ? "active" : ""}`}
+                  onClick={() => setMediaTab("images")}
+                >
+                  <ImageIcon /> Images & Thumbnails ({mediaInfo.images.length})
+                </button>
+              )}
+              <button
+                className={`asset-tab-btn ${mediaTab === "text" ? "active" : ""}`}
+                onClick={() => setMediaTab("text")}
+              >
+                📝 Text & Overview
+              </button>
             </div>
 
             {/* Tab 1: Images & App Store Screenshots Grid */}

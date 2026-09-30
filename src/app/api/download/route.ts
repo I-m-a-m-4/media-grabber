@@ -24,20 +24,22 @@ async function downloadWithYtDlp(pageUrl: string, formatId?: string, audioOnly?:
     fs.mkdirSync(scratchDir, { recursive: true });
   }
 
-  const ext = audioOnly ? 'mp3' : 'mp4';
+  const isAudio = audioOnly || formatId === 'audio_best' || formatId?.includes('audio') || formatId?.includes('mp3');
+  const ext = isAudio ? 'mp3' : 'mp4';
   const filePrefix = `dl_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
   const tempFilePath = path.join(scratchDir, `${filePrefix}.${ext}`);
 
   const args = [
     '--no-warnings',
+    '--no-check-certificates',
     '--extractor-args',
     'youtube:player_client=android,web',
   ];
 
-  if (audioOnly) {
+  if (isAudio) {
     args.push('-x', '--audio-format', 'mp3', '-o', tempFilePath);
   } else if (formatId && formatId !== 'b' && !formatId.startsWith('img_')) {
-    args.push('-f', `${formatId}+bestaudio/best/b`, '-o', tempFilePath);
+    args.push('-f', `${formatId}+bestaudio/${formatId}/best/b`, '-o', tempFilePath);
   } else {
     args.push('-f', 'b/best', '-o', tempFilePath);
   }
@@ -102,14 +104,21 @@ async function handleDownloadRequest(
       pageUrl.includes('facebook.com') ||
       (directUrl && directUrl.includes('googlevideo.com'));
 
+    const isAudio = audioOnly || formatId === 'audio_best' || formatId?.includes('audio') || formatId?.includes('mp3');
+
     // 1. YouTube/Video stream download via yt-dlp temp file stream
-    // Only invoke yt-dlp when no directUrl is available or when directUrl is a protected googlevideo stream
-    const isDirectAvailable = directUrl && directUrl.trim().length > 0 && !directUrl.includes('googlevideo.com');
+    // Only invoke yt-dlp when no directUrl is available or when directUrl is a protected googlevideo stream or proxied download URL
+    const isDirectAvailable =
+      directUrl &&
+      directUrl.trim().length > 0 &&
+      !directUrl.includes('googlevideo.com') &&
+      !directUrl.startsWith('/api/download') &&
+      !directUrl.includes('/api/download');
 
     if (isYtStream && !isDirectAvailable) {
-      const ytResult = await downloadWithYtDlp(pageUrl, formatId, audioOnly);
+      const ytResult = await downloadWithYtDlp(pageUrl, formatId, isAudio);
       if (ytResult && ytResult.buffer.length > 0) {
-        const ext = ytResult.ext || (audioOnly ? 'mp3' : 'mp4');
+        const ext = ytResult.ext || (isAudio ? 'mp3' : 'mp4');
         let safeFilename = customFilename || `media_${Date.now()}.${ext}`;
         if (!safeFilename.endsWith(`.${ext}`)) {
           safeFilename += `.${ext}`;
@@ -117,7 +126,7 @@ async function handleDownloadRequest(
         const brandedName = formatBrandedFilename(safeFilename);
 
         const headers = new Headers();
-        headers.set('Content-Type', audioOnly ? 'audio/mpeg' : 'video/mp4');
+        headers.set('Content-Type', isAudio ? 'audio/mpeg' : 'video/mp4');
         headers.set('Content-Disposition', `attachment; filename="${brandedName}"`);
         headers.set('Content-Length', ytResult.buffer.length.toString());
         headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -127,6 +136,15 @@ async function handleDownloadRequest(
           headers,
         });
       }
+
+      // If serverless yt-dlp failed or was blocked on this host, do NOT fall through to fetching HTML web page
+      return NextResponse.json(
+        {
+          error:
+            'Video stream could not be downloaded via the web server proxy. For direct downloads without cloud rate-limits, please use the Media Grabber Desktop App.',
+        },
+        { status: 503 }
+      );
     }
 
     // 2. Standard direct media asset / stream proxy fetch
