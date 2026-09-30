@@ -49,7 +49,14 @@ pub async fn get_media_info(
         ));
     }
 
-    // 2. Engine 1: Attempt yt-dlp first for video/audio streaming sites
+    // 2. Engine 1: Dedicated Twitter / X resolver (fast direct MP4 stream extraction)
+    if clean_url.contains("twitter.com") || clean_url.contains("x.com") {
+        if let Ok(info) = fetch_twitter_info(clean_url, &security_report).await {
+            return Ok(info);
+        }
+    }
+
+    // Attempt yt-dlp for video/audio streaming sites
     if security_report.category == "media_stream" {
         if let Ok(info) = fetch_yt_dlp_info(&app_handle, clean_url, &security_report).await {
             return Ok(info);
@@ -70,6 +77,207 @@ pub async fn get_media_info(
 
     // 5. Engine 4: Generic Webpage & Direct Media Extractor
     fetch_generic_web_info(clean_url, &security_report).await
+}
+
+async fn fetch_twitter_info(
+    url: &str,
+    security_report: &SecurityReport,
+) -> Result<MediaInfo, String> {
+    let re = Regex::new(r"(?i)status/(\d+)").unwrap();
+    let tweet_id = re
+        .captures(url)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str())
+        .ok_or_else(|| "Invalid Twitter status URL".to_string())?;
+
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let fx_url = format!("https://api.fxtwitter.com/status/{}", tweet_id);
+    let resp = client.get(&fx_url).send().await.map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        return Err(format!("fxtwitter returned HTTP {}", resp.status()));
+    }
+
+    let json_data: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let tweet = json_data
+        .get("tweet")
+        .ok_or_else(|| "No tweet data found in response".to_string())?;
+
+    let raw_text = tweet.get("text").and_then(|v| v.as_str()).unwrap_or("");
+    let author_name = tweet
+        .get("author")
+        .and_then(|a| a.get("name"))
+        .and_then(|n| n.as_str())
+        .unwrap_or("Twitter User");
+    let author_handle = tweet
+        .get("author")
+        .and_then(|a| a.get("screen_name"))
+        .and_then(|n| n.as_str())
+        .unwrap_or("");
+    let avatar_url = tweet
+        .get("author")
+        .and_then(|a| a.get("avatar_url"))
+        .and_then(|n| n.as_str());
+
+    let title = if raw_text.len() > 90 {
+        format!("{}...", &raw_text[..90])
+    } else if !raw_text.is_empty() {
+        raw_text.to_string()
+    } else {
+        format!("{}'s Video on X", author_name)
+    };
+
+    let uploader = format!("{} (@{})", author_name, author_handle);
+
+    let mut formats_list = Vec::new();
+    let mut images_list = Vec::new();
+    let mut primary_thumb: Option<String> = None;
+    let mut duration: Option<f64> = None;
+    let mut seen_urls = std::collections::HashSet::new();
+
+    let empty_arr = Vec::new();
+    let videos = tweet
+        .get("media")
+        .and_then(|m| m.get("videos"))
+        .and_then(|v| v.as_array())
+        .or_else(|| {
+            tweet
+                .get("quote")
+                .and_then(|q| q.get("media"))
+                .and_then(|m| m.get("videos"))
+                .and_then(|v| v.as_array())
+        })
+        .unwrap_or(&empty_arr);
+
+    for (v_idx, vid) in videos.iter().enumerate() {
+        if duration.is_none() {
+            duration = vid.get("duration").and_then(|d| d.as_f64());
+        }
+
+        if let Some(thumb) = vid.get("thumbnail_url").and_then(|t| t.as_str()) {
+            if primary_thumb.is_none() {
+                primary_thumb = Some(thumb.to_string());
+            }
+            if !seen_urls.contains(thumb) {
+                seen_urls.insert(thumb.to_string());
+                images_list.push(FormatInfo {
+                    format_id: format!("tw_thumb_{}", v_idx + 1),
+                    ext: "jpg".to_string(),
+                    resolution: "Video Poster Thumbnail".to_string(),
+                    fps: None,
+                    vcodec: "none".to_string(),
+                    acodec: "none".to_string(),
+                    filesize: None,
+                    note: Some("Video Poster Thumbnail".to_string()),
+                    direct_url: Some(thumb.to_string()),
+                    asset_type: "image".to_string(),
+                });
+            }
+        }
+
+        if let Some(variants) = vid.get("variants").and_then(|vr| vr.as_array()) {
+            let mut mp4_variants: Vec<&serde_json::Value> = variants
+                .iter()
+                .filter(|v| {
+                    let ct = v.get("content_type").and_then(|c| c.as_str()).unwrap_or("");
+                    let u = v.get("url").and_then(|c| c.as_str()).unwrap_or("");
+                    ct == "video/mp4" || u.contains(".mp4")
+                })
+                .collect();
+
+            mp4_variants.sort_by(|a, b| {
+                let bit_a = a.get("bitrate").and_then(|x| x.as_u64()).unwrap_or(0);
+                let bit_b = b.get("bitrate").and_then(|x| x.as_u64()).unwrap_or(0);
+                bit_b.cmp(&bit_a)
+            });
+
+            for (f_idx, v) in mp4_variants.iter().enumerate() {
+                if let Some(v_url) = v.get("url").and_then(|u| u.as_str()) {
+                    if !seen_urls.contains(v_url) {
+                        seen_urls.insert(v_url.to_string());
+
+                        let res_re = Regex::new(r"/(\d+x\d+)/").unwrap();
+                        let dim_str = res_re
+                            .captures(v_url)
+                            .and_then(|c| c.get(1))
+                            .map(|m| m.as_str().to_string())
+                            .unwrap_or_else(|| "HD Video".to_string());
+
+                        formats_list.push(FormatInfo {
+                            format_id: format!("tw_vid_{}_{}", v_idx + 1, f_idx + 1),
+                            ext: "mp4".to_string(),
+                            resolution: format!("MP4 Video ({})", dim_str),
+                            fps: None,
+                            vcodec: "h264".to_string(),
+                            acodec: "aac".to_string(),
+                            filesize: None,
+                            note: Some(format!("Twitter Stream ({})", dim_str)),
+                            direct_url: Some(v_url.to_string()),
+                            asset_type: "video".to_string(),
+                        });
+                    }
+                }
+            }
+
+            if let Some(highest_mp4) = mp4_variants.first() {
+                if let Some(h_url) = highest_mp4.get("url").and_then(|u| u.as_str()) {
+                    formats_list.push(FormatInfo {
+                        format_id: format!("tw_audio_{}", v_idx + 1),
+                        ext: "mp3".to_string(),
+                        resolution: "Audio Only (MP3 Track)".to_string(),
+                        fps: None,
+                        vcodec: "none".to_string(),
+                        acodec: "mp3".to_string(),
+                        filesize: None,
+                        note: Some("Original Audio Track".to_string()),
+                        direct_url: Some(h_url.to_string()),
+                        asset_type: "audio".to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    if let Some(avatar) = avatar_url {
+        if !seen_urls.contains(avatar) {
+            seen_urls.insert(avatar.to_string());
+            images_list.push(FormatInfo {
+                format_id: "tw_avatar".to_string(),
+                ext: "jpg".to_string(),
+                resolution: "Author Avatar".to_string(),
+                fps: None,
+                vcodec: "none".to_string(),
+                acodec: "none".to_string(),
+                filesize: None,
+                note: Some("Author Avatar".to_string()),
+                direct_url: Some(avatar.to_string()),
+                asset_type: "image".to_string(),
+            });
+        }
+        if primary_thumb.is_none() {
+            primary_thumb = Some(avatar.to_string());
+        }
+    }
+
+    if formats_list.is_empty() && images_list.is_empty() {
+        return Err("No media found in tweet".to_string());
+    }
+
+    Ok(MediaInfo {
+        title,
+        description: Some(raw_text.to_string()),
+        thumbnail: primary_thumb,
+        duration,
+        uploader: Some(uploader),
+        site_name: Some("Twitter / X".to_string()),
+        formats: formats_list,
+        images: images_list,
+        security: security_report.clone(),
+    })
 }
 
 async fn fetch_yt_dlp_info(

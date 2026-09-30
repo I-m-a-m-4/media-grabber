@@ -219,6 +219,278 @@ function sanitizeMediaInfo(info: any, targetUrl: string) {
   return info;
 }
 
+// Dedicated Twitter / X Fallback Resolver
+async function getTwitterFallbackInfo(targetUrl: string) {
+  try {
+    const tweetIdMatch = targetUrl.match(/status\/(\d+)/i) || targetUrl.match(/\/(\d{15,25})(?:\?|\/|$)/);
+    if (!tweetIdMatch) return null;
+    const tweetId = tweetIdMatch[1];
+
+    let tweet: any = null;
+
+    // 1. Try fxtwitter API
+    try {
+      const fxRes = await fetch(`https://api.fxtwitter.com/status/${tweetId}`, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Accept': 'application/json',
+        },
+        cache: 'no-store',
+      });
+      if (fxRes.ok) {
+        const data = await fxRes.json().catch(() => null);
+        if (data?.tweet) {
+          tweet = data.tweet;
+        }
+      }
+    } catch (e) {
+      console.warn('fxtwitter fetch error:', e);
+    }
+
+    // 2. Fallback: vxtwitter API if fxtwitter fails
+    if (!tweet) {
+      try {
+        const vxRes = await fetch(`https://api.vxtwitter.com/Twitter/status/${tweetId}`, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept': 'application/json',
+          },
+          cache: 'no-store',
+        });
+        if (vxRes.ok) {
+          const vxData = await vxRes.json().catch(() => null);
+          if (vxData) {
+            tweet = {
+              text: vxData.text || '',
+              author: {
+                name: vxData.user_name || '',
+                screen_name: vxData.user_screen_name || '',
+                avatar_url: vxData.user_profile_image_url || '',
+              },
+              media: {
+                videos: Array.isArray(vxData.media_extended)
+                  ? vxData.media_extended.filter((m: any) => m.type === 'video' || m.type === 'gif').map((m: any) => ({
+                      url: m.url,
+                      thumbnail_url: m.thumbnail_url,
+                      duration: m.duration_millis ? m.duration_millis / 1000 : null,
+                      variants: [{ url: m.url, content_type: 'video/mp4' }],
+                    }))
+                  : [],
+                photos: Array.isArray(vxData.media_extended)
+                  ? vxData.media_extended.filter((m: any) => m.type === 'image').map((m: any) => ({
+                      url: m.url,
+                    }))
+                  : [],
+              },
+            };
+          }
+        }
+      } catch (e) {
+        console.warn('vxtwitter fetch error:', e);
+      }
+    }
+
+    if (tweet) {
+      const rawText = tweet.text || '';
+      const title = rawText
+        ? (rawText.length > 90 ? rawText.slice(0, 90) + '...' : rawText)
+        : (tweet.author?.name ? `${tweet.author.name}'s Post on X` : 'Twitter Video');
+      const description = rawText;
+      const uploader = tweet.author?.name
+        ? `${tweet.author.name} (@${tweet.author.screen_name || ''})`
+        : 'Twitter / X User';
+
+      const rawVideos = tweet.media?.videos || tweet.quote?.media?.videos || [];
+      const allMedia = [
+        ...(Array.isArray(tweet.media?.all) ? tweet.media.all : []),
+        ...(Array.isArray(tweet.quote?.media?.all) ? tweet.quote.media.all : []),
+      ];
+
+      const videoItems: any[] = [];
+      if (Array.isArray(rawVideos) && rawVideos.length > 0) {
+        videoItems.push(...rawVideos);
+      } else {
+        allMedia.forEach((m: any) => {
+          if (m && (m.type === 'video' || m.type === 'gif' || m.format === 'video/mp4' || (Array.isArray(m.variants) && m.variants.length > 0))) {
+            videoItems.push(m);
+          }
+        });
+      }
+
+      const formats: any[] = [];
+      const seenFmtUrls = new Set<string>();
+
+      videoItems.forEach((video: any, vIdx: number) => {
+        const variants: any[] = (video.variants || []).filter((v: any) =>
+          v && (v.content_type === 'video/mp4' || (v.url && v.url.includes('.mp4')))
+        );
+
+        // Sort by bitrate descending (highest quality first)
+        variants.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+
+        variants.forEach((v: any, idx: number) => {
+          if (!v.url || seenFmtUrls.has(v.url)) return;
+          seenFmtUrls.add(v.url);
+
+          const dimMatch = v.url.match(/\/(\d+x\d+)\//);
+          let resLabel = dimMatch
+            ? dimMatch[1]
+            : (video.width && video.height ? `${video.width}x${video.height}` : 'HD Video');
+
+          let maxDim = 0;
+          if (dimMatch) {
+            const parts = dimMatch[1].split('x').map((n: string) => parseInt(n) || 0);
+            maxDim = Math.max(parts[0], parts[1]);
+          } else if (video.width || video.height) {
+            maxDim = Math.max(video.width || 0, video.height || 0);
+          }
+
+          let resTitle = `Standard Video (${resLabel})`;
+          if (maxDim >= 1080) resTitle = `1080p Full HD (${resLabel})`;
+          else if (maxDim >= 720) resTitle = `720p HD Video (${resLabel})`;
+          else if (maxDim >= 480) resTitle = `480p Video (${resLabel})`;
+
+          formats.push({
+            format_id: `twitter_vid_${vIdx + 1}_${idx + 1}`,
+            ext: 'mp4',
+            resolution: resTitle,
+            vcodec: 'h264',
+            acodec: 'aac',
+            direct_url: v.url,
+            asset_type: 'video',
+            note: `Twitter MP4 Video (${resLabel})`,
+          });
+        });
+
+        // If no variants matched but video has direct url
+        if (variants.length === 0 && video.url && !seenFmtUrls.has(video.url)) {
+          seenFmtUrls.add(video.url);
+          formats.push({
+            format_id: `twitter_vid_${vIdx + 1}_main`,
+            ext: 'mp4',
+            resolution: video.width && video.height ? `${video.width}x${video.height}` : 'HD Video',
+            vcodec: 'h264',
+            acodec: 'aac',
+            direct_url: video.url,
+            asset_type: 'video',
+            note: 'Twitter MP4 Video Stream',
+          });
+        }
+
+        // Add Audio-only extraction format pointing to the highest quality stream
+        const highestStream = variants[0]?.url || video.url;
+        if (highestStream) {
+          formats.push({
+            format_id: `twitter_audio_${vIdx + 1}`,
+            ext: 'mp3',
+            resolution: 'Audio Only (Extract MP3)',
+            vcodec: 'none',
+            acodec: 'mp3',
+            direct_url: highestStream,
+            asset_type: 'audio',
+            note: 'Original Audio Track (MP3)',
+          });
+        }
+      });
+
+      const images: any[] = [];
+      const seenImgUrls = new Set<string>();
+
+      // Photos from tweet
+      const photoItems = [
+        ...(Array.isArray(tweet.media?.photos) ? tweet.media.photos : []),
+        ...(Array.isArray(tweet.quote?.media?.photos) ? tweet.quote.media.photos : []),
+        ...allMedia.filter((m: any) => m && (m.type === 'photo' || (!m.variants && m.url && !m.url.includes('.mp4')))),
+      ];
+
+      photoItems.forEach((p: any, idx: number) => {
+        const pUrl = p?.url;
+        if (pUrl && !seenImgUrls.has(pUrl)) {
+          seenImgUrls.add(pUrl);
+          images.push({
+            format_id: `twitter_photo_${idx + 1}`,
+            ext: 'jpg',
+            resolution: p.width && p.height ? `${p.width}x${p.height}` : 'High Res Photo',
+            vcodec: 'none',
+            acodec: 'none',
+            direct_url: pUrl,
+            asset_type: 'image',
+            note: `Twitter Photo ${idx + 1}`,
+          });
+        }
+      });
+
+      // Video poster thumbnails
+      videoItems.forEach((v: any, idx: number) => {
+        const thumb = v?.thumbnail_url;
+        if (thumb && !seenImgUrls.has(thumb)) {
+          seenImgUrls.add(thumb);
+          images.push({
+            format_id: `twitter_thumb_${idx + 1}`,
+            ext: 'jpg',
+            resolution: 'Video Poster Thumbnail',
+            vcodec: 'none',
+            acodec: 'none',
+            direct_url: thumb,
+            asset_type: 'image',
+            note: `Video ${idx + 1} Poster Thumbnail`,
+          });
+        }
+      });
+
+      // Author avatar
+      if (tweet.author?.avatar_url && !seenImgUrls.has(tweet.author.avatar_url)) {
+        seenImgUrls.add(tweet.author.avatar_url);
+        images.push({
+          format_id: 'twitter_author_avatar',
+          ext: 'jpg',
+          resolution: 'Author Profile Avatar',
+          vcodec: 'none',
+          acodec: 'none',
+          direct_url: tweet.author.avatar_url,
+          asset_type: 'image',
+          note: `${uploader} Avatar`,
+        });
+      }
+
+      // Author banner
+      if (tweet.author?.banner_url && !seenImgUrls.has(tweet.author.banner_url)) {
+        seenImgUrls.add(tweet.author.banner_url);
+        images.push({
+          format_id: 'twitter_author_banner',
+          ext: 'jpg',
+          resolution: 'Author Profile Banner',
+          vcodec: 'none',
+          acodec: 'none',
+          direct_url: tweet.author.banner_url,
+          asset_type: 'image',
+          note: `${uploader} Banner`,
+        });
+      }
+
+      const primaryThumbnail =
+        videoItems[0]?.thumbnail_url || photoItems[0]?.url || tweet.author?.avatar_url;
+
+      if (formats.length > 0 || images.length > 0) {
+        return {
+          title,
+          description,
+          extracted_text: description,
+          thumbnail: primaryThumbnail,
+          duration: videoItems[0]?.duration || null,
+          uploader: `Twitter/X • ${uploader}`,
+          site_name: 'Twitter / X',
+          formats,
+          images,
+        };
+      }
+    }
+  } catch (err) {
+    console.error('Twitter fallback resolver error:', err);
+  }
+  return null;
+}
+
 // Dedicated TikTok Fallback Resolver
 async function getTikTokFallbackInfo(targetUrl: string) {
   try {
@@ -642,6 +914,25 @@ export async function GET(request: Request) {
       domain.includes('facebook.com') ||
       domain.includes('dailymotion.com');
 
+    // Dedicated Twitter / X Fast Resolver (Run first to extract high-res direct streams without yt-dlp timeout)
+    if (domain.includes('twitter.com') || domain.includes('x.com') || url.includes('twitter.com') || url.includes('x.com')) {
+      const twitterData = await getTwitterFallbackInfo(url);
+      if (twitterData && (twitterData.formats?.length > 0 || twitterData.images?.length > 0)) {
+        return NextResponse.json(
+          sanitizeMediaInfo(
+            {
+              ...twitterData,
+              security: {
+                ...security,
+                category: 'media_stream',
+              },
+            },
+            url
+          )
+        );
+      }
+    }
+
     if (isMediaStream || !isAppStore) {
       const ytData = await getYtDlpInfo(url, browserCookie);
       if (ytData && ((ytData.formats && ytData.formats.length > 0) || (ytData.images && ytData.images.length > 0))) {
@@ -686,6 +977,25 @@ export async function GET(request: Request) {
             sanitizeMediaInfo(
               {
                 ...instagramData,
+                security: {
+                  ...security,
+                  category: 'media_stream',
+                },
+              },
+              url
+            )
+          );
+        }
+      }
+
+      // Dedicated Twitter / X Fallback Extractor
+      if (domain.includes('twitter.com') || domain.includes('x.com') || url.includes('twitter.com') || url.includes('x.com')) {
+        const twitterData = await getTwitterFallbackInfo(url);
+        if (twitterData && (twitterData.formats?.length > 0 || twitterData.images?.length > 0)) {
+          return NextResponse.json(
+            sanitizeMediaInfo(
+              {
+                ...twitterData,
                 security: {
                   ...security,
                   category: 'media_stream',

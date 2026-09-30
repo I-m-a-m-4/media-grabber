@@ -103,7 +103,10 @@ async function handleDownloadRequest(
       (directUrl && directUrl.includes('googlevideo.com'));
 
     // 1. YouTube/Video stream download via yt-dlp temp file stream
-    if (isYtStream && (!directUrl || directUrl.includes('googlevideo.com') || pageUrl.includes('twitter.com') || pageUrl.includes('x.com'))) {
+    // Only invoke yt-dlp when no directUrl is available or when directUrl is a protected googlevideo stream
+    const isDirectAvailable = directUrl && directUrl.trim().length > 0 && !directUrl.includes('googlevideo.com');
+
+    if (isYtStream && !isDirectAvailable) {
       const ytResult = await downloadWithYtDlp(pageUrl, formatId, audioOnly);
       if (ytResult && ytResult.buffer.length > 0) {
         const ext = ytResult.ext || (audioOnly ? 'mp3' : 'mp4');
@@ -126,7 +129,7 @@ async function handleDownloadRequest(
       }
     }
 
-    // 2. Standard image/asset binary proxy fetch
+    // 2. Standard direct media asset / stream proxy fetch
     let fetchUrl = targetUrl;
     
     // Unwrap if the URL was proxied for UI display
@@ -147,6 +150,11 @@ async function handleDownloadRequest(
     if (fetchUrl.includes('instagram.com') || fetchUrl.includes('cdninstagram.com') || fetchUrl.includes('fbcdn.net') || pageUrl.includes('instagram.com')) {
       reqHeaders['Referer'] = 'https://www.instagram.com/';
       reqHeaders['Origin'] = 'https://www.instagram.com';
+    }
+
+    if (fetchUrl.includes('twimg.com') || fetchUrl.includes('twitter.com') || fetchUrl.includes('x.com') || pageUrl.includes('twitter.com') || pageUrl.includes('x.com')) {
+      reqHeaders['Referer'] = 'https://x.com/';
+      reqHeaders['Origin'] = 'https://x.com';
     }
 
     const response = await fetch(fetchUrl, {

@@ -673,7 +673,11 @@ export default function App() {
       if (info.formats && info.formats.length > 0) {
         const videoFormats = info.formats.filter((f) => f.vcodec !== "none");
         if (videoFormats.length > 0) {
-          setSelectedFormat(videoFormats[videoFormats.length - 1].format_id);
+          const bestFmt =
+            videoFormats.find((f) => f.resolution?.includes("1080")) ||
+            videoFormats.find((f) => f.resolution?.includes("720") || f.resolution?.includes("HD")) ||
+            videoFormats[0];
+          setSelectedFormat(bestFmt.format_id);
         } else {
           setSelectedFormat(info.formats[0].format_id);
         }
@@ -775,11 +779,23 @@ export default function App() {
         url: url.trim(),
         thumbnail: directUrl || mediaInfo.thumbnail,
         timestamp: Date.now(),
-        format: audioOnly ? "Audio (MP3)" : directUrl ? "Image / Asset" : "Video",
-        assetType: directUrl ? "Image Asset" : "Media Stream",
+        format: audioOnly
+          ? "Audio (MP3)"
+          : selectedFmtForMeta?.asset_type === "video" || directUrl?.includes(".mp4")
+          ? "MP4 Video"
+          : directUrl
+          ? "Image / Asset"
+          : "Video",
+        assetType: audioOnly
+          ? "Audio Stream"
+          : selectedFmtForMeta?.asset_type === "video" || directUrl?.includes(".mp4")
+          ? "Video Stream"
+          : directUrl
+          ? "Image Asset"
+          : "Media Stream",
         duration: mediaInfo.duration ? new Date(mediaInfo.duration * 1000).toISOString().substring(11, 19) : "00:00:00",
-        resolution: selectedFmtForMeta?.resolution || "HD 720p 1280x720",
-        size: selectedFmtForMeta?.filesize ? formatBytes(selectedFmtForMeta.filesize) : (audioOnly ? "4.2 MB" : "Unknown Size"),
+        resolution: selectedFmtForMeta?.resolution || (directUrl?.includes(".mp4") ? "HD Video" : "Asset"),
+        size: selectedFmtForMeta?.filesize ? formatBytes(selectedFmtForMeta.filesize) : (audioOnly ? "Audio Track" : "Direct Stream"),
         uploader: mediaInfo.uploader || "User",
         status: "completed",
         progress: 100,
