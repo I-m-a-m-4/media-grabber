@@ -324,6 +324,23 @@ function formatBytes(bytes?: number, decimals = 2) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + " " + sizes[i];
 }
 
+function parseFormatDisplay(fmt: FormatInfo) {
+  let title = fmt.resolution || "Standard Quality";
+  let dim = "";
+
+  // Extract dimensions like (720x1280) or 720x1280 or 1920x1080
+  const dimMatch = title.match(/\((\d+)[x×](\d+)\)/) || title.match(/(\d+)[x×](\d+)/);
+  if (dimMatch) {
+    dim = `${dimMatch[1]} × ${dimMatch[2]} px`;
+    title = title.replace(/\s*\(\d+[x×]\d+\)/, "").trim();
+  }
+
+  // Clean common repetitive words for tighter header display
+  title = title.replace(/\s+Video$/i, "");
+
+  return { title, dim };
+}
+
 
 
 // Flutterwave Support Modal
@@ -1316,104 +1333,141 @@ export default function App() {
             {/* Tab 3: Video Streams & Audio Controls Tab */}
             {mediaTab === "video" && mediaInfo.formats && mediaInfo.formats.length > 0 && (
               <div className="download-controls fade-in">
-                <div className="control-group switch-group" style={{ marginBottom: "1rem" }}>
-                  <label className="switch-label">
-                    <div className="toggle-switch">
-                      <input
-                        type="checkbox"
-                        checked={audioOnly}
-                        onChange={(e) => setAudioOnly(e.currentTarget.checked)}
-                        disabled={downloading}
-                        id="audio-toggle"
-                      />
-                      <span className="slider round"></span>
+                {/* Modern Audio Toggle Card */}
+                <div className="audio-toggle-card">
+                  <div className="audio-toggle-left">
+                    <div className="audio-toggle-icon">🎵</div>
+                    <div className="audio-toggle-info">
+                      <span className="audio-toggle-title">Extract Audio Track (MP3)</span>
+                      <span className="audio-toggle-desc">Download standalone audio file without video stream</span>
                     </div>
-                    <span className="switch-text">🎵 Extract Audio Only (MP3 Track)</span>
+                  </div>
+                  <label className="toggle-switch" htmlFor="audio-toggle">
+                    <input
+                      type="checkbox"
+                      checked={audioOnly}
+                      onChange={(e) => {
+                        const isAudio = e.currentTarget.checked;
+                        setAudioOnly(isAudio);
+                        if (isAudio) {
+                          const audioFmt = mediaInfo.formats.find((f) => f.asset_type === "audio" || f.vcodec === "none");
+                          if (audioFmt) setSelectedFormat(audioFmt.format_id);
+                        } else {
+                          const vidFmt = mediaInfo.formats.find((f) => f.asset_type !== "audio" && f.vcodec !== "none");
+                          if (vidFmt) setSelectedFormat(vidFmt.format_id);
+                        }
+                      }}
+                      disabled={downloading}
+                      id="audio-toggle"
+                    />
+                    <span className="slider round"></span>
                   </label>
                 </div>
 
-                {!audioOnly && (
-                  <div className="custom-quality-container">
-                    <div className="quality-header-row">
-                      <span className="quality-header-label">
-                        <VideoIcon /> Select Video Stream Quality
-                      </span>
-                      <span className="help-text">
-                        {mediaInfo.formats.filter((f) => f.vcodec !== "none").length || mediaInfo.formats.length} Streams Available
-                      </span>
-                    </div>
+                {(() => {
+                  const videoFormats = mediaInfo.formats.filter((f) => f.asset_type !== "audio" && f.vcodec !== "none");
+                  const audioFormats = mediaInfo.formats.filter((f) => f.asset_type === "audio" || f.vcodec === "none");
+                  const displayFormats = audioOnly
+                    ? (audioFormats.length > 0 ? audioFormats : mediaInfo.formats)
+                    : (videoFormats.length > 0 ? videoFormats : mediaInfo.formats);
 
-                    {/* Interactive Stream Quality Cards Grid */}
-                    <div className="quality-grid">
-                      {mediaInfo.formats.map((fmt, idx) => {
-                        const isSelected = selectedFormat === fmt.format_id;
-                        const isBest = idx === mediaInfo.formats.length - 1 || (fmt.resolution && (fmt.resolution.includes("1080") || fmt.resolution.includes("HD")));
-                        return (
-                          <div
-                            key={fmt.format_id}
-                            className={`quality-card ${isSelected ? "selected" : ""}`}
-                            onClick={() => !downloading && setSelectedFormat(fmt.format_id)}
-                          >
-                            <div className="quality-card-left">
-                              <div className="quality-title-badge">
-                                <span>{fmt.resolution || "Standard"}</span>
-                                {fmt.fps ? <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>({fmt.fps}fps)</span> : null}
-                                {isBest ? <span className="recommended-pill">BEST</span> : null}
-                              </div>
-                              <div className="quality-submeta">
-                                <span className="format-chip">{fmt.ext.toUpperCase()}</span>
-                                <span>• {formatBytes(fmt.filesize)}</span>
-                                {fmt.note ? <span>• {fmt.note.substring(0, 18)}</span> : null}
-                              </div>
-                            </div>
-                            <div className="quality-card-right">
-                              {isSelected ? (
-                                <div className="check-badge" title="Selected Format">
-                                  <CheckIcon />
+                  const bestFormatId = displayFormats.length > 0 ? displayFormats[0].format_id : null;
+                  const selectedFmtObj = mediaInfo.formats.find((f) => f.format_id === selectedFormat);
+
+                  let downloadBtnLabel = "Download Selected Stream";
+                  if (audioOnly) {
+                    downloadBtnLabel = "Download Audio Track (MP3)";
+                  } else if (selectedFmtObj) {
+                    const cleanTitle = parseFormatDisplay(selectedFmtObj).title;
+                    downloadBtnLabel = `Download ${cleanTitle} (${selectedFmtObj.ext.toUpperCase()})`;
+                  }
+
+                  return (
+                    <>
+                      <div className="custom-quality-container">
+                        <div className="quality-header-row">
+                          <span className="quality-header-label">
+                            {audioOnly ? (
+                              <span style={{ color: "var(--accent)" }}>🎵 Audio Track Streams</span>
+                            ) : (
+                              <>
+                                <VideoIcon /> Select Video Quality Stream
+                              </>
+                            )}
+                          </span>
+                          <span className="help-text">
+                            {displayFormats.length} {displayFormats.length === 1 ? "Stream" : "Streams"} Available
+                          </span>
+                        </div>
+
+                        {/* Interactive Stream Quality Cards Grid */}
+                        <div className="quality-grid">
+                          {displayFormats.map((fmt) => {
+                            const isSelected = selectedFormat === fmt.format_id;
+                            const isBest = fmt.format_id === bestFormatId && !audioOnly;
+                            const { title: resTitle, dim: dimTag } = parseFormatDisplay(fmt);
+                            const isAudio = fmt.asset_type === "audio" || fmt.vcodec === "none";
+
+                            return (
+                              <div
+                                key={fmt.format_id}
+                                className={`quality-card ${isSelected ? "selected" : ""}`}
+                                onClick={() => {
+                                  if (!downloading) {
+                                    setSelectedFormat(fmt.format_id);
+                                    if (isAudio && !audioOnly) setAudioOnly(true);
+                                    if (!isAudio && audioOnly) setAudioOnly(false);
+                                  }
+                                }}
+                              >
+                                <div className="quality-card-header">
+                                  <div className="quality-main-title">
+                                    <span>{resTitle}</span>
+                                    {isBest && <span className="recommended-pill">★ BEST QUALITY</span>}
+                                  </div>
+                                  <div className={`radio-indicator ${isSelected ? "selected" : "unselected"}`}>
+                                    {isSelected ? <CheckIcon /> : null}
+                                  </div>
                                 </div>
-                              ) : (
-                                <div style={{ width: "22px", height: "22px", borderRadius: "50%", border: "1px solid var(--border-subtle)" }}></div>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
 
-                    {/* Stream Selection Dropdown */}
-                    <div className="form-group" style={{ marginTop: "0.75rem" }}>
-                      <select
-                        id="format-select"
-                        className="select-input"
-                        value={selectedFormat}
-                        onChange={(e) => setSelectedFormat(e.currentTarget.value)}
-                        disabled={downloading}
+                                <div className="quality-card-specs">
+                                  <span className="spec-chip format">{fmt.ext.toUpperCase()}</span>
+                                  {dimTag ? <span className="spec-chip dim">{dimTag}</span> : null}
+                                  {fmt.fps ? <span className="spec-chip fps">{fmt.fps} fps</span> : null}
+                                </div>
+
+                                <div className="quality-card-footer">
+                                  <span className="meta-size">
+                                    {fmt.filesize ? formatBytes(fmt.filesize) : (isAudio ? "MP3 Audio Track" : "Direct Stream")}
+                                  </span>
+                                  <span className="meta-codec">
+                                    {fmt.vcodec !== "none" ? "H.264 / AAC" : "Audio Only"}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <button
+                        className={`primary-btn download-btn ${downloading ? "loading" : ""}`}
+                        onClick={() => handleDownload()}
+                        disabled={downloading || (!audioOnly && !selectedFormat)}
                       >
-                        {mediaInfo.formats.map((fmt) => (
-                          <option key={fmt.format_id} value={fmt.format_id}>
-                            {fmt.resolution || "Standard"} {fmt.fps ? `(${fmt.fps}fps)` : ""} • {fmt.ext.toUpperCase()} • {formatBytes(fmt.filesize)}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                )}
-
-                <button
-                  className={`primary-btn download-btn ${downloading ? "loading" : ""}`}
-                  onClick={() => handleDownload()}
-                  disabled={downloading || (!audioOnly && !selectedFormat)}
-                >
-                  {downloading ? (
-                    <>
-                      <span className="loader"></span> Downloading Media Stream...
+                        {downloading ? (
+                          <>
+                            <span className="loader"></span> Downloading Media Stream...
+                          </>
+                        ) : (
+                          <>
+                            <DownloadIcon /> {downloadBtnLabel}
+                          </>
+                        )}
+                      </button>
                     </>
-                  ) : (
-                    <>
-                      <DownloadIcon /> Download Selected Stream
-                    </>
-                  )}
-                </button>
+                  );
+                })()}
               </div>
             )}
           </section>
