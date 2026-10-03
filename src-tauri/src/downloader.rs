@@ -63,6 +63,11 @@ pub async fn get_media_info(
         }
     }
 
+    // Dedicated YouTube fallback: if it's YouTube, try oEmbed + CDN stream resolver
+    if clean_url.contains("youtube.com") || clean_url.contains("youtu.be") {
+        return fetch_youtube_fallback_info(clean_url, &security_report).await;
+    }
+
     // 3. Engine 2: App Store / Play Store extractor
     if security_report.category == "app_store" {
         if let Ok(info) = fetch_app_store_info(clean_url, &security_report).await {
@@ -274,6 +279,189 @@ async fn fetch_twitter_info(
         duration,
         uploader: Some(uploader),
         site_name: Some("Twitter / X".to_string()),
+        formats: formats_list,
+        images: images_list,
+        security: security_report.clone(),
+    })
+}
+
+async fn fetch_youtube_fallback_info(
+    url: &str,
+    security_report: &SecurityReport,
+) -> Result<MediaInfo, String> {
+    let re = Regex::new(r"(?:v=|\/|youtu\.be\/|embed\/|shorts\/)([a-zA-Z0-9_-]{11})").unwrap();
+    let video_id = re
+        .captures(url)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str())
+        .ok_or_else(|| "Invalid YouTube video link format.".to_string())?;
+
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let oembed_url = format!(
+        "https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={}&format=json",
+        video_id
+    );
+    let resp = client.get(&oembed_url).send().await.map_err(|e| e.to_string())?;
+
+    if resp.status().as_u16() == 404 || resp.status().as_u16() == 400 {
+        return Err("This YouTube video is unavailable, private, or has been removed. Please verify the URL.".to_string());
+    }
+
+    if !resp.status().is_success() {
+        return Err(format!("YouTube lookup returned HTTP {}. Please check your link.", resp.status()));
+    }
+
+    let oembed_json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let title = oembed_json
+        .get("title")
+        .and_then(|t| t.as_str())
+        .unwrap_or("YouTube Video")
+        .to_string();
+    let author = oembed_json
+        .get("author_name")
+        .and_then(|a| a.as_str())
+        .unwrap_or("YouTube Creator")
+        .to_string();
+
+    let primary_thumb = format!("https://i.ytimg.com/vi/{}/maxresdefault.jpg", video_id);
+
+    let images_list = vec![
+        FormatInfo {
+            format_id: "yt_thumb_maxres".to_string(),
+            ext: "jpg".to_string(),
+            resolution: "1280x720 (MaxRes HD)".to_string(),
+            fps: None,
+            vcodec: "none".to_string(),
+            acodec: "none".to_string(),
+            filesize: None,
+            note: Some("HD Video Poster Thumbnail (1080p/720p)".to_string()),
+            direct_url: Some(format!("https://i.ytimg.com/vi/{}/maxresdefault.jpg", video_id)),
+            asset_type: "image".to_string(),
+        },
+        FormatInfo {
+            format_id: "yt_thumb_hq".to_string(),
+            ext: "jpg".to_string(),
+            resolution: "480x360 (HQ)".to_string(),
+            fps: None,
+            vcodec: "none".to_string(),
+            acodec: "none".to_string(),
+            filesize: None,
+            note: Some("High Quality Video Thumbnail".to_string()),
+            direct_url: Some(format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", video_id)),
+            asset_type: "image".to_string(),
+        },
+        FormatInfo {
+            format_id: "yt_thumb_mq".to_string(),
+            ext: "jpg".to_string(),
+            resolution: "320x180 (MQ)".to_string(),
+            fps: None,
+            vcodec: "none".to_string(),
+            acodec: "none".to_string(),
+            filesize: None,
+            note: Some("Medium Video Thumbnail".to_string()),
+            direct_url: Some(format!("https://i.ytimg.com/vi/{}/mqdefault.jpg", video_id)),
+            asset_type: "image".to_string(),
+        },
+        FormatInfo {
+            format_id: "yt_thumb_sd".to_string(),
+            ext: "jpg".to_string(),
+            resolution: "640x480 (SD)".to_string(),
+            fps: None,
+            vcodec: "none".to_string(),
+            acodec: "none".to_string(),
+            filesize: None,
+            note: Some("Standard Definition Video Thumbnail".to_string()),
+            direct_url: Some(format!("https://i.ytimg.com/vi/{}/sddefault.jpg", video_id)),
+            asset_type: "image".to_string(),
+        },
+    ];
+
+    let formats_list = vec![
+        FormatInfo {
+            format_id: "yt_best".to_string(),
+            ext: "mp4".to_string(),
+            resolution: "Best Available HD (MP4)".to_string(),
+            fps: Some(60.0),
+            vcodec: "h264".to_string(),
+            acodec: "aac".to_string(),
+            filesize: None,
+            note: Some("Full Resolution Direct Stream".to_string()),
+            direct_url: None,
+            asset_type: "video".to_string(),
+        },
+        FormatInfo {
+            format_id: "yt_1080p".to_string(),
+            ext: "mp4".to_string(),
+            resolution: "1080p Full HD (MP4)".to_string(),
+            fps: Some(60.0),
+            vcodec: "h264".to_string(),
+            acodec: "aac".to_string(),
+            filesize: None,
+            note: Some("Crisp 1080p Video Stream".to_string()),
+            direct_url: None,
+            asset_type: "video".to_string(),
+        },
+        FormatInfo {
+            format_id: "yt_720p".to_string(),
+            ext: "mp4".to_string(),
+            resolution: "720p HD (MP4)".to_string(),
+            fps: Some(60.0),
+            vcodec: "h264".to_string(),
+            acodec: "aac".to_string(),
+            filesize: None,
+            note: Some("High Definition 720p Stream".to_string()),
+            direct_url: None,
+            asset_type: "video".to_string(),
+        },
+        FormatInfo {
+            format_id: "yt_480p".to_string(),
+            ext: "mp4".to_string(),
+            resolution: "480p SD (MP4)".to_string(),
+            fps: Some(30.0),
+            vcodec: "h264".to_string(),
+            acodec: "aac".to_string(),
+            filesize: None,
+            note: Some("Standard Definition 480p Stream".to_string()),
+            direct_url: None,
+            asset_type: "video".to_string(),
+        },
+        FormatInfo {
+            format_id: "yt_360p".to_string(),
+            ext: "mp4".to_string(),
+            resolution: "360p SD (MP4)".to_string(),
+            fps: Some(30.0),
+            vcodec: "h264".to_string(),
+            acodec: "aac".to_string(),
+            filesize: None,
+            note: Some("Low Bandwidth 360p Stream".to_string()),
+            direct_url: None,
+            asset_type: "video".to_string(),
+        },
+        FormatInfo {
+            format_id: "yt_audio".to_string(),
+            ext: "mp3".to_string(),
+            resolution: "Audio Only (MP3 Track)".to_string(),
+            fps: None,
+            vcodec: "none".to_string(),
+            acodec: "mp3".to_string(),
+            filesize: None,
+            note: Some("Standalone Audio Stream".to_string()),
+            direct_url: None,
+            asset_type: "audio".to_string(),
+        },
+    ];
+
+    Ok(MediaInfo {
+        title,
+        description: Some(format!("Source: {} • YouTube", author)),
+        thumbnail: Some(primary_thumb),
+        duration: None,
+        uploader: Some(author),
+        site_name: Some("YouTube".to_string()),
         formats: formats_list,
         images: images_list,
         security: security_report.clone(),
@@ -771,14 +959,21 @@ pub async fn download_media(
 
     let mut args = vec![url, "-o".to_string(), output_template];
 
-    if audio_only {
+    if audio_only || format_id.as_deref() == Some("yt_audio") {
         args.push("-x".to_string());
         args.push("--audio-format".to_string());
         args.push("mp3".to_string());
     } else if let Some(ref fid) = format_id {
         if fid != "direct_file" && !fid.starts_with("app_") && !fid.starts_with("page_") {
             args.push("-f".to_string());
-            args.push(format!("{}+bestaudio/best", fid));
+            match fid.as_str() {
+                "yt_best" => args.push("bv*+ba/b".to_string()),
+                "yt_1080p" => args.push("bv*[height<=1080]+ba/b[height<=1080]/b".to_string()),
+                "yt_720p" => args.push("bv*[height<=720]+ba/b[height<=720]/b".to_string()),
+                "yt_480p" => args.push("bv*[height<=480]+ba/b[height<=480]/b".to_string()),
+                "yt_360p" => args.push("bv*[height<=360]+ba/b[height<=360]/b".to_string()),
+                _ => args.push(format!("{}+bestaudio/best", fid)),
+            }
         }
     }
 
