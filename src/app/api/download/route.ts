@@ -32,8 +32,6 @@ async function downloadWithYtDlp(pageUrl: string, formatId?: string, audioOnly?:
   const args = [
     '--no-warnings',
     '--no-check-certificates',
-    '--extractor-args',
-    'youtube:player_client=android,web',
   ];
 
   if (isAudio) {

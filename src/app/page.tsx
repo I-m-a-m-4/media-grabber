@@ -7,7 +7,7 @@ import { openPath } from "@tauri-apps/plugin-opener";
 
 import Link from "next/link";
 import { useFlutterwave, closePaymentModal } from "flutterwave-react-v3";
-import { initAnonymousUser, recordPaymentTransaction, auth } from "../lib/firebase";
+import { initAnonymousUser, recordPaymentTransaction, recordDownloadActivity, auth } from "../lib/firebase";
 
 interface SecurityReport {
   is_safe: boolean;
@@ -57,8 +57,9 @@ interface HistoryItem {
   resolution?: string;
   size?: string;
   uploader?: string;
-  status: "downloading" | "completed";
+  status: "downloading" | "completed" | "failed";
   progress: number;
+  errorMsg?: string;
 }
 
 export type LogoVariant = "ring" | "play_magnet" | "cyber_shield" | "gem";
@@ -335,8 +336,10 @@ function parseFormatDisplay(fmt: FormatInfo) {
     title = title.replace(/\s*\(\d+[x×]\d+\)/, "").trim();
   }
 
-  // Clean common repetitive words for tighter header display
-  title = title.replace(/\s+Video$/i, "");
+  // Remove redundant container tags like (MP4), (WEBM), (Video Only)
+  title = title.replace(/\s*\((mp4|webm|m4a|mp3|mkv|avi)\)/gi, "").trim();
+  title = title.replace(/\s*\(video\s+only\)/gi, "").trim();
+  title = title.replace(/\s+Video$/i, "").trim();
 
   return { title, dim };
 }
@@ -433,9 +436,13 @@ function SupportModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-function HistoryItemCard({ item, removeHistoryItem, handleOpenDownloadsFolder, reFetchHistoryItem }: { item: HistoryItem; removeHistoryItem: (id: string) => void; handleOpenDownloadsFolder: () => void; reFetchHistoryItem: (url: string) => void }) {
+function HistoryItemCard({ item, removeHistoryItem, handleOpenDownloadsFolder, reFetchHistoryItem }: { item: HistoryItem; removeHistoryItem: (id: string) => void; handleOpenDownloadsFolder: (path?: string) => void; reFetchHistoryItem: (url: string) => void }) {
+  const isDownloading = item.status === "downloading";
+  const isFailed = item.status === "failed";
+  const pct = Math.max(5, Math.min(100, Math.round(item.progress || 10)));
+
   return (
-    <li className="history-item">
+    <li className={`history-item ${isDownloading ? "item-downloading" : ""} ${isFailed ? "item-failed" : ""}`}>
       <div className="history-thumbnail-wrapper">
         {item.thumbnail ? (
           <img src={item.thumbnail} alt="" className="history-thumbnail" />
@@ -458,6 +465,32 @@ function HistoryItemCard({ item, removeHistoryItem, handleOpenDownloadsFolder, r
           <span className="history-link" title={item.url}>{item.url}</span>
           <SearchIcon />
         </div>
+
+        {/* Live Active Progress Bar */}
+        {isDownloading && (
+          <div className="history-progress-wrap">
+            <div className="history-progress-track">
+              <div 
+                className="history-progress-fill" 
+                style={{ width: `${pct}%` }} 
+              />
+            </div>
+            <div className="history-progress-meta">
+              <span className="history-pulse-text">
+                <span className="pulse-dot"></span> Downloading...
+              </span>
+              <span className="history-percentage">{pct}%</span>
+            </div>
+          </div>
+        )}
+
+        {/* Failed Error Message */}
+        {isFailed && (
+          <div className="history-error-row">
+            <span className="history-error-badge">Failed</span>
+            <span className="history-error-msg">{item.errorMsg || "Download encountered an error. Click Retry to try again."}</span>
+          </div>
+        )}
       </div>
       
       <div className="history-actions">
@@ -466,12 +499,18 @@ function HistoryItemCard({ item, removeHistoryItem, handleOpenDownloadsFolder, r
         <button className="icon-btn history-action-btn" onClick={() => reFetchHistoryItem(item.url)} title="Retry"><RefreshIcon /></button>
         <button className="icon-btn history-action-btn" onClick={() => window.open(item.url, '_blank')} title="Open Original Link"><PlayIcon /></button>
         
-        <div className="history-status-indicator">
-          <CheckCircleIcon />
+        <div className={`history-status-indicator ${item.status || "completed"}`} title={isDownloading ? `Downloading: ${pct}%` : isFailed ? "Failed" : "Download Complete"}>
+          {isDownloading ? (
+            <div className="history-spin-loader" />
+          ) : isFailed ? (
+            <div className="history-fail-indicator"><ErrorIcon /></div>
+          ) : (
+            <CheckCircleIcon />
+          )}
         </div>
         
         {isTauriApp() && (
-          <button className="icon-btn history-action-btn" onClick={() => handleOpenDownloadsFolder()} title="Open Folder"><FolderIcon /></button>
+          <button className="icon-btn history-action-btn" onClick={() => handleOpenDownloadsFolder()} title="Open Downloads Folder"><FolderIcon /></button>
         )}
       </div>
     </li>
@@ -513,15 +552,15 @@ export default function App() {
 
   // App states
   const [loading, setLoading] = useState(false);
-  const [downloading, setDownloading] = useState(false);
+  const [activeDownloadIds, setActiveDownloadIds] = useState<string[]>([]);
   const [zipping, setZipping] = useState(false);
-  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
 
   // User selections
   const [selectedFormat, setSelectedFormat] = useState<string>("");
   const [audioOnly, setAudioOnly] = useState(false);
+  const [streamFilter, setStreamFilter] = useState<"all" | "hd1080" | "hd720" | "sd" | "audio">("all");
 
   // History state
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -721,116 +760,186 @@ export default function App() {
       return;
     }
 
-    setDownloading(true);
-    if (targetFormatId) setDownloadingId(targetFormatId);
+    const downloadJobId = `dl_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const selectedFmtForMeta =
+      mediaInfo.formats.find((f) => f.format_id === fmtToUse) ||
+      mediaInfo.images?.find((img) => img.format_id === fmtToUse) ||
+      null;
+
+    // 1. Create history item immediately with "downloading" status
+    const newItem: HistoryItem = {
+      id: downloadJobId,
+      title: itemNote ? `${mediaInfo.title} (${itemNote})` : mediaInfo.title,
+      url: url.trim(),
+      thumbnail: directUrl || mediaInfo.thumbnail,
+      timestamp: Date.now(),
+      format: audioOnly
+        ? "Audio (MP3)"
+        : selectedFmtForMeta?.asset_type === "video" || directUrl?.includes(".mp4")
+        ? "MP4 Video"
+        : directUrl
+        ? "Image / Asset"
+        : "Video",
+      assetType: audioOnly
+        ? "Audio Stream"
+        : selectedFmtForMeta?.asset_type === "video" || directUrl?.includes(".mp4")
+        ? "Video Stream"
+        : directUrl
+        ? "Image Asset"
+        : "Media Stream",
+      duration: mediaInfo.duration ? new Date(mediaInfo.duration * 1000).toISOString().substring(11, 19) : "00:00:00",
+      resolution: selectedFmtForMeta?.resolution || (directUrl?.includes(".mp4") ? "HD Video" : "Asset"),
+      size: selectedFmtForMeta?.filesize ? formatBytes(selectedFmtForMeta.filesize) : (audioOnly ? "Audio Track" : "Direct Stream"),
+      uploader: mediaInfo.uploader || "User",
+      status: "downloading",
+      progress: 12,
+    };
+
+    // 2. Immediately add to history and save to localStorage
+    setHistory((prev) => {
+      const updated = [newItem, ...prev.filter(item => item.id !== downloadJobId)].slice(0, 50);
+      localStorage.setItem("mediaGrabberHistory", JSON.stringify(updated));
+      return updated;
+    });
+
+    const activeKeys = [downloadJobId, ...(fmtToUse ? [fmtToUse] : [])];
+    setActiveDownloadIds((prev) => [...prev, ...activeKeys]);
     setErrorMsg("");
-    setSuccessMsg("Download started. Saving file to your computer...");
+    setSuccessMsg("Download started! Check progress in History.");
 
-    try {
-      let resMsg = "";
-      if (isTauriApp()) {
-        resMsg = await invoke<string>("download_media", {
-          url: url.trim(),
-          formatId: fmtToUse || null,
-          audioOnly,
-          browserCookie: browserCookie || null,
-          directUrl: directUrl || null,
-        });
-      } else {
-        const selectedFmtObj = mediaInfo.formats.find((f) => f.format_id === fmtToUse);
-        const streamUrlToUse = directUrl || selectedFmtObj?.direct_url;
+    // 3. Smooth progress simulation ticker while backend runs
+    let progressVal = 12;
+    const progressInterval = setInterval(() => {
+      progressVal = Math.min(94, progressVal + Math.floor(Math.random() * 8) + 4);
+      setHistory((prev) =>
+        prev.map((item) =>
+          item.id === downloadJobId && item.status === "downloading"
+            ? { ...item, progress: progressVal }
+            : item
+        )
+      );
+    }, 450);
 
-        if (streamUrlToUse || fmtToUse) {
-          // Direct stream attachment proxy download to local machine
-          const ext = audioOnly ? "mp3" : (selectedFmtObj?.ext || "mp4");
-          const noteLabel = audioOnly
-            ? "Audio_MP3"
-            : (itemNote || selectedFmtObj?.resolution || "Media_Stream");
-          const baseName = `${mediaInfo.title || "media"}_${noteLabel}`.replace(/[^a-zA-Z0-9_-]/g, "_");
-          const safeName = baseName.endsWith(`.${ext}`) ? baseName : `${baseName}.${ext}`;
-          
-          const downloadApiUrl = `/api/download?url=${encodeURIComponent(url.trim())}&directUrl=${encodeURIComponent(directUrl || '')}&formatId=${encodeURIComponent(fmtToUse || '')}&audioOnly=${audioOnly}&filename=${encodeURIComponent(safeName)}`;
-          
-          const a = document.createElement("a");
-          a.href = downloadApiUrl;
-          a.download = safeName;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          resMsg = audioOnly
-            ? "Audio MP3 stream download started! Check your Downloads folder."
-            : "Video stream download started! Check your Downloads folder.";
-        } else {
-          const res = await fetch("/api/download", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              url: url.trim(),
-              formatId: fmtToUse || null,
-              audioOnly,
-              browserCookie: browserCookie || null,
-              directUrl: directUrl || null,
-            }),
+    // 4. Asynchronously perform download without blocking additional downloads
+    (async () => {
+      try {
+        let resMsg = "";
+        if (isTauriApp()) {
+          resMsg = await invoke<string>("download_media", {
+            url: url.trim(),
+            formatId: fmtToUse || null,
+            audioOnly,
+            browserCookie: browserCookie || null,
+            directUrl: directUrl || null,
           });
-          const textRes = await res.text();
-          let data: any = null;
-          try {
-            data = JSON.parse(textRes);
-          } catch {
-            if (!res.ok) throw new Error(`Download server returned error (${res.status})`);
-            throw new Error("Received an unexpected HTML response from download server.");
+        } else {
+          const selectedFmtObj = mediaInfo.formats.find((f) => f.format_id === fmtToUse);
+          const streamUrlToUse = directUrl || selectedFmtObj?.direct_url;
+
+          if (streamUrlToUse || fmtToUse) {
+            const ext = audioOnly ? "mp3" : (selectedFmtObj?.ext || "mp4");
+            const noteLabel = audioOnly
+              ? "Audio_MP3"
+              : (itemNote || selectedFmtObj?.resolution || "Media_Stream");
+            const baseName = `${mediaInfo.title || "media"}_${noteLabel}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+            const safeName = baseName.endsWith(`.${ext}`) ? baseName : `${baseName}.${ext}`;
+            
+            const downloadApiUrl = `/api/download?url=${encodeURIComponent(url.trim())}&directUrl=${encodeURIComponent(directUrl || '')}&formatId=${encodeURIComponent(fmtToUse || '')}&audioOnly=${audioOnly}&filename=${encodeURIComponent(safeName)}`;
+            
+            const a = document.createElement("a");
+            a.href = downloadApiUrl;
+            a.download = safeName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            resMsg = audioOnly
+              ? "Audio MP3 stream download started! Check your Downloads folder."
+              : "Video stream download started! Check your Downloads folder.";
+          } else {
+            const res = await fetch("/api/download", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                url: url.trim(),
+                formatId: fmtToUse || null,
+                audioOnly,
+                browserCookie: browserCookie || null,
+                directUrl: directUrl || null,
+              }),
+            });
+            const textRes = await res.text();
+            let data: any = null;
+            try {
+              data = JSON.parse(textRes);
+            } catch {
+              if (!res.ok) throw new Error(`Download server returned error (${res.status})`);
+              throw new Error("Received an unexpected HTML response from download server.");
+            }
+            if (!res.ok) throw new Error(data?.error || "Web download request failed");
+            resMsg = data.message || "Download completed successfully!";
           }
-          if (!res.ok) throw new Error(data?.error || "Web download request failed");
-          resMsg = data.message || "Download completed successfully!";
         }
+
+        clearInterval(progressInterval);
+        // Mark complete in history
+        setHistory((prev) => {
+          const updated = prev.map((item) =>
+            item.id === downloadJobId
+              ? { ...item, status: "completed" as const, progress: 100 }
+              : item
+          );
+          localStorage.setItem("mediaGrabberHistory", JSON.stringify(updated));
+          return updated;
+        });
+
+        // Track download activity in Firebase Analytics
+        const isImage =
+          selectedFmtForMeta?.asset_type === "image" ||
+          selectedFmtForMeta?.asset_type === "screenshot" ||
+          (directUrl && /\.(jpg|jpeg|png|webp|gif|svg|avif)/i.test(directUrl)) ||
+          (itemNote && /(image|screenshot|poster|thumbnail)/i.test(itemNote));
+
+        const computedAssetType: "image" | "video" | "audio" = audioOnly
+          ? "audio"
+          : isImage
+          ? "image"
+          : "video";
+
+        let sourceDomain = "unknown";
+        try {
+          sourceDomain = mediaInfo.security?.domain || new URL(url.trim()).hostname;
+        } catch {
+          sourceDomain = "unknown";
+        }
+
+        recordDownloadActivity({
+          assetType: computedAssetType,
+          mediaTitle: (itemNote ? `${mediaInfo.title} (${itemNote})` : mediaInfo.title) || "Media",
+          mediaUrl: directUrl || url.trim(),
+          sourceDomain,
+          format: audioOnly ? "mp3" : (selectedFmtForMeta?.ext || (isImage ? "image" : "mp4")),
+          resolution: selectedFmtForMeta?.resolution || (audioOnly ? "Audio" : isImage ? (itemNote || "Image") : "Default"),
+          isDesktop: isTauriApp(),
+        });
+
+        setSuccessMsg(resMsg || "Download completed successfully!");
+      } catch (error: any) {
+        clearInterval(progressInterval);
+        console.error(error);
+        setHistory((prev) => {
+          const updated = prev.map((item) =>
+            item.id === downloadJobId
+              ? { ...item, status: "failed" as const, errorMsg: error.message || String(error) }
+              : item
+          );
+          localStorage.setItem("mediaGrabberHistory", JSON.stringify(updated));
+          return updated;
+        });
+        setErrorMsg(`Download failed: ${error.message || error}`);
+      } finally {
+        setActiveDownloadIds((prev) => prev.filter((id) => !activeKeys.includes(id)));
       }
-
-      setSuccessMsg(resMsg || "Download completed successfully!");
-
-      // Add to history
-      const selectedFmtForMeta = mediaInfo.formats.find((f) => f.format_id === fmtToUse) || null;
-      
-      const newItem: HistoryItem = {
-        id: Date.now().toString(),
-        title: itemNote ? `${mediaInfo.title} (${itemNote})` : mediaInfo.title,
-        url: url.trim(),
-        thumbnail: directUrl || mediaInfo.thumbnail,
-        timestamp: Date.now(),
-        format: audioOnly
-          ? "Audio (MP3)"
-          : selectedFmtForMeta?.asset_type === "video" || directUrl?.includes(".mp4")
-          ? "MP4 Video"
-          : directUrl
-          ? "Image / Asset"
-          : "Video",
-        assetType: audioOnly
-          ? "Audio Stream"
-          : selectedFmtForMeta?.asset_type === "video" || directUrl?.includes(".mp4")
-          ? "Video Stream"
-          : directUrl
-          ? "Image Asset"
-          : "Media Stream",
-        duration: mediaInfo.duration ? new Date(mediaInfo.duration * 1000).toISOString().substring(11, 19) : "00:00:00",
-        resolution: selectedFmtForMeta?.resolution || (directUrl?.includes(".mp4") ? "HD Video" : "Asset"),
-        size: selectedFmtForMeta?.filesize ? formatBytes(selectedFmtForMeta.filesize) : (audioOnly ? "Audio Track" : "Direct Stream"),
-        uploader: mediaInfo.uploader || "User",
-        status: "completed",
-        progress: 100,
-      };
-
-      setHistory((prev) => {
-        const updated = [newItem, ...prev].slice(0, 50);
-        localStorage.setItem("mediaGrabberHistory", JSON.stringify(updated));
-        return updated;
-      });
-    } catch (error: any) {
-      console.error(error);
-      setErrorMsg(`Download failed: ${error.message || error}`);
-      setSuccessMsg("");
-    } finally {
-      setDownloading(false);
-      setDownloadingId(null);
-    }
+    })();
   }
 
   async function handleDownloadAllZip() {
@@ -870,6 +979,23 @@ export default function App() {
       window.URL.revokeObjectURL(downloadUrl);
 
       setSuccessMsg("ZIP Archive Bundle downloaded! Saved to your Downloads folder.");
+
+      let zipDomain = "unknown";
+      try {
+        zipDomain = mediaInfo.security?.domain || new URL(url.trim()).hostname;
+      } catch {
+        zipDomain = "unknown";
+      }
+
+      recordDownloadActivity({
+        assetType: "zip",
+        mediaTitle: `${mediaInfo.title || "Media Assets"} (Bundle)`,
+        mediaUrl: url.trim(),
+        sourceDomain: zipDomain,
+        format: "zip",
+        resolution: `${mediaInfo.images?.length || 0} assets`,
+        isDesktop: isTauriApp(),
+      });
     } catch (err: any) {
       console.error(err);
       setErrorMsg(`ZIP generation failed: ${err.message || err}`);
@@ -891,11 +1017,16 @@ export default function App() {
     });
   }
 
-  async function handleOpenDownloadsFolder() {
+  async function handleOpenDownloadsFolder(customPath?: string) {
     try {
       if (isTauriApp()) {
-        const dDir = await downloadDir();
-        await openPath(dDir);
+        try {
+          await invoke("open_downloads_folder", { customPath: customPath || null });
+        } catch (innerErr) {
+          console.warn("invoke open_downloads_folder failed, falling back to openPath", innerErr);
+          const dDir = await downloadDir();
+          await openPath(dDir);
+        }
       } else {
         setSuccessMsg("Check your Downloads folder for the downloaded files.");
       }
@@ -990,7 +1121,7 @@ export default function App() {
                     onChange={(e) => setUrl(e.currentTarget.value)}
                     placeholder="Paste link here (YouTube, App Store, Instagram, TikTok, Website...)"
                     aria-label="Media URL"
-                    disabled={loading || downloading}
+                    disabled={loading}
                   />
                   <div className="input-actions">
                     <button
@@ -1016,7 +1147,7 @@ export default function App() {
                 <button
                   className={`primary-btn ${loading ? "loading" : ""}`}
                   type="submit"
-                  disabled={loading || downloading || !url.trim()}
+                  disabled={loading || !url.trim()}
                 >
                   {loading ? (
                     <span className="loader"></span>
@@ -1281,11 +1412,11 @@ export default function App() {
                           </button>
                           <button
                             className="secondary-btn image-action-btn primary-subtle"
-                            disabled={downloading}
+                            disabled={activeDownloadIds.includes(imgItem.format_id)}
                             onClick={() => handleDownload(imgItem.format_id, imgItem.direct_url, imgItem.note)}
                             title="Download file directly to your local computer"
                           >
-                            {downloadingId === imgItem.format_id ? (
+                            {activeDownloadIds.includes(imgItem.format_id) ? (
                               <span className="loader sm-loader"></span>
                             ) : (
                               <>
@@ -1357,7 +1488,6 @@ export default function App() {
                           if (vidFmt) setSelectedFormat(vidFmt.format_id);
                         }
                       }}
-                      disabled={downloading}
                       id="audio-toggle"
                     />
                     <span className="slider round"></span>
@@ -1382,8 +1512,64 @@ export default function App() {
                     downloadBtnLabel = `Download ${cleanTitle} (${selectedFmtObj.ext.toUpperCase()})`;
                   }
 
+                  // Counts for filters
+                  const hd1080Count = displayFormats.filter(f => {
+                    const res = (f.resolution || "").toLowerCase();
+                    return res.includes("1080") || res.includes("1440") || res.includes("2160") || res.includes("4k") || res.includes("2k");
+                  }).length;
+                  const hd720Count = displayFormats.filter(f => (f.resolution || "").toLowerCase().includes("720")).length;
+                  const sdCount = displayFormats.filter(f => {
+                    const res = (f.resolution || "").toLowerCase();
+                    return res.includes("480") || res.includes("360") || res.includes("240") || res.includes("144");
+                  }).length;
+                  const audioCount = displayFormats.filter(f => f.asset_type === "audio" || f.vcodec === "none").length;
+
+                  const filteredFormats = displayFormats.filter(fmt => {
+                    if (streamFilter === "all") return true;
+                    const res = (fmt.resolution || "").toLowerCase();
+                    const isAud = fmt.asset_type === "audio" || fmt.vcodec === "none";
+                    if (streamFilter === "hd1080") return res.includes("1080") || res.includes("1440") || res.includes("2160") || res.includes("4k") || res.includes("2k");
+                    if (streamFilter === "hd720") return res.includes("720");
+                    if (streamFilter === "sd") return res.includes("480") || res.includes("360") || res.includes("240") || res.includes("144");
+                    if (streamFilter === "audio") return isAud;
+                    return true;
+                  });
+
+                  const isMainBtnLoading = selectedFormat ? activeDownloadIds.includes(selectedFormat) : false;
+
                   return (
                     <>
+                      {/* Top Prominent Quick Action Download Banner - ALWAYS visible at top so user never has to scroll */}
+                      <div className="stream-action-banner">
+                        <div className="stream-action-summary">
+                          <span className="stream-action-badge">READY TO DOWNLOAD</span>
+                          <div className="stream-action-title">
+                            <strong>{audioOnly ? "🎵 MP3 Audio Track" : (selectedFmtObj ? parseFormatDisplay(selectedFmtObj).title : "Select Stream Quality")}</strong>
+                            {selectedFmtObj && (
+                              <span className="stream-action-meta">
+                                • {selectedFmtObj.ext.toUpperCase()} • {selectedFmtObj.filesize ? formatBytes(selectedFmtObj.filesize) : (audioOnly ? "Audio Stream" : "Direct Stream")}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <button
+                          className={`primary-btn top-download-btn ${isMainBtnLoading ? "loading" : ""}`}
+                          onClick={() => handleDownload()}
+                          disabled={!audioOnly && !selectedFormat}
+                        >
+                          {isMainBtnLoading ? (
+                            <>
+                              <span className="loader"></span> Downloading Media...
+                            </>
+                          ) : (
+                            <>
+                              <DownloadIcon /> {downloadBtnLabel}
+                            </>
+                          )}
+                        </button>
+                      </div>
+
                       <div className="custom-quality-container">
                         <div className="quality-header-row">
                           <span className="quality-header-label">
@@ -1396,34 +1582,89 @@ export default function App() {
                             )}
                           </span>
                           <span className="help-text">
-                            {displayFormats.length} {displayFormats.length === 1 ? "Stream" : "Streams"} Available
+                            Showing {filteredFormats.length} of {displayFormats.length} Streams
                           </span>
                         </div>
 
-                        {/* Interactive Stream Quality Cards Grid */}
+                        {/* Stream Resolution Filter Chips */}
+                        <div className="quality-filter-bar">
+                          <button
+                            type="button"
+                            className={`filter-chip ${streamFilter === "all" ? "active" : ""}`}
+                            onClick={() => setStreamFilter("all")}
+                          >
+                            All ({displayFormats.length})
+                          </button>
+                          {hd1080Count > 0 && (
+                            <button
+                              type="button"
+                              className={`filter-chip ${streamFilter === "hd1080" ? "active" : ""}`}
+                              onClick={() => setStreamFilter("hd1080")}
+                            >
+                              ★ 1080p+ HD ({hd1080Count})
+                            </button>
+                          )}
+                          {hd720Count > 0 && (
+                            <button
+                              type="button"
+                              className={`filter-chip ${streamFilter === "hd720" ? "active" : ""}`}
+                              onClick={() => setStreamFilter("hd720")}
+                            >
+                              720p HD ({hd720Count})
+                            </button>
+                          )}
+                          {sdCount > 0 && (
+                            <button
+                              type="button"
+                              className={`filter-chip ${streamFilter === "sd" ? "active" : ""}`}
+                              onClick={() => setStreamFilter("sd")}
+                            >
+                              SD 480p/360p ({sdCount})
+                            </button>
+                          )}
+                          {audioCount > 0 && (
+                            <button
+                              type="button"
+                              className={`filter-chip ${streamFilter === "audio" ? "active" : ""}`}
+                              onClick={() => {
+                                setStreamFilter("audio");
+                                setAudioOnly(true);
+                              }}
+                            >
+                              🎵 Audio ({audioCount})
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Interactive Stream Quality Cards Grid with direct download buttons */}
                         <div className="quality-grid">
-                          {displayFormats.map((fmt) => {
+                          {filteredFormats.map((fmt) => {
                             const isSelected = selectedFormat === fmt.format_id;
                             const isBest = fmt.format_id === bestFormatId && !audioOnly;
                             const { title: resTitle, dim: dimTag } = parseFormatDisplay(fmt);
                             const isAudio = fmt.asset_type === "audio" || fmt.vcodec === "none";
+                            const isCardDownloading = activeDownloadIds.includes(fmt.format_id);
 
                             return (
                               <div
                                 key={fmt.format_id}
                                 className={`quality-card ${isSelected ? "selected" : ""}`}
                                 onClick={() => {
-                                  if (!downloading) {
-                                    setSelectedFormat(fmt.format_id);
-                                    if (isAudio && !audioOnly) setAudioOnly(true);
-                                    if (!isAudio && audioOnly) setAudioOnly(false);
-                                  }
+                                  setSelectedFormat(fmt.format_id);
+                                  if (isAudio && !audioOnly) setAudioOnly(true);
+                                  if (!isAudio && audioOnly) setAudioOnly(false);
                                 }}
                               >
                                 <div className="quality-card-header">
-                                  <div className="quality-main-title">
-                                    <span>{resTitle}</span>
-                                    {isBest && <span className="recommended-pill">★ BEST QUALITY</span>}
+                                  <div className="quality-header-content">
+                                    {isBest && (
+                                      <div className="quality-badge-row">
+                                        <span className="recommended-pill">★ BEST QUALITY</span>
+                                      </div>
+                                    )}
+                                    <div className="quality-main-title">
+                                      <span>{resTitle}</span>
+                                    </div>
                                   </div>
                                   <div className={`radio-indicator ${isSelected ? "selected" : "unselected"}`}>
                                     {isSelected ? <CheckIcon /> : null}
@@ -1437,12 +1678,38 @@ export default function App() {
                                 </div>
 
                                 <div className="quality-card-footer">
-                                  <span className="meta-size">
-                                    {fmt.filesize ? formatBytes(fmt.filesize) : (isAudio ? "MP3 Audio Track" : "Direct Stream")}
-                                  </span>
-                                  <span className="meta-codec">
-                                    {fmt.vcodec !== "none" ? "H.264 / AAC" : "Audio Only"}
-                                  </span>
+                                  <div className="quality-card-meta-col">
+                                    <span className="meta-size">
+                                      {fmt.filesize ? formatBytes(fmt.filesize) : (isAudio ? "MP3 Audio Track" : "Direct Stream")}
+                                    </span>
+                                    <span className="meta-codec">
+                                      {fmt.vcodec !== "none" ? "H.264 / AAC" : "Audio Only"}
+                                    </span>
+                                  </div>
+
+                                  {/* Direct Download Button Right On The Card */}
+                                  <button
+                                    type="button"
+                                    className={`quick-card-download-btn ${isCardDownloading ? "loading" : ""}`}
+                                    title={`Download ${resTitle}`}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSelectedFormat(fmt.format_id);
+                                      if (isAudio && !audioOnly) setAudioOnly(true);
+                                      if (!isAudio && audioOnly) setAudioOnly(false);
+                                      handleDownload(fmt.format_id);
+                                    }}
+                                  >
+                                    {isCardDownloading ? (
+                                      <>
+                                        <span className="loader-mini"></span> Downloading...
+                                      </>
+                                    ) : (
+                                      <>
+                                        <DownloadIcon /> Download
+                                      </>
+                                    )}
+                                  </button>
                                 </div>
                               </div>
                             );
@@ -1451,11 +1718,11 @@ export default function App() {
                       </div>
 
                       <button
-                        className={`primary-btn download-btn ${downloading ? "loading" : ""}`}
+                        className={`primary-btn download-btn ${isMainBtnLoading ? "loading" : ""}`}
                         onClick={() => handleDownload()}
-                        disabled={downloading || (!audioOnly && !selectedFormat)}
+                        disabled={!audioOnly && !selectedFormat}
                       >
-                        {downloading ? (
+                        {isMainBtnLoading ? (
                           <>
                             <span className="loader"></span> Downloading Media Stream...
                           </>
@@ -1587,14 +1854,22 @@ export default function App() {
               </button>
               <button
                 className="primary-btn sm-btn"
-                disabled={downloading}
+                disabled={activeDownloadIds.includes(previewImage.format_id)}
                 onClick={() => {
                   if (previewImage.direct_url) {
                     handleDownload(previewImage.format_id, previewImage.direct_url, previewImage.note);
                   }
                 }}
               >
-                <DownloadIcon /> Save to Computer
+                {activeDownloadIds.includes(previewImage.format_id) ? (
+                  <>
+                    <span className="loader sm-loader"></span> Downloading...
+                  </>
+                ) : (
+                  <>
+                    <DownloadIcon /> Save to Computer
+                  </>
+                )}
               </button>
             </div>
           </div>

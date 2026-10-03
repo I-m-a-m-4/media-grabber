@@ -15,7 +15,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             downloader::get_media_info,
-            downloader::download_media
+            downloader::download_media,
+            downloader::open_downloads_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

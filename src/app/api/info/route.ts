@@ -129,29 +129,62 @@ async function getYouTubeFallbackInfo(targetUrl: string) {
         acodec: 'aac',
         direct_url: `/api/download?url=${encodeURIComponent(canonicalUrl)}&formatId=b`,
         asset_type: 'video',
-        note: 'Best Available Video + Audio (1080p / 720p)',
+        note: 'Best Available High Definition Video (1080p / 720p)',
+      },
+      {
+        format_id: '137',
+        ext: 'mp4',
+        resolution: '1080p Full HD',
+        fps: 60,
+        vcodec: 'h264',
+        acodec: 'aac',
+        direct_url: `/api/download?url=${encodeURIComponent(canonicalUrl)}&formatId=137`,
+        asset_type: 'video',
+        note: 'Full HD 1080p Video + Audio',
       },
       {
         format_id: '22',
         ext: 'mp4',
-        resolution: '720p HD (MP4)',
+        resolution: '720p HD',
         fps: 30,
         vcodec: 'h264',
         acodec: 'aac',
         direct_url: `/api/download?url=${encodeURIComponent(canonicalUrl)}&formatId=22`,
         asset_type: 'video',
-        note: 'High Definition 720p MP4 Video',
+        note: 'High Definition 720p Video',
+      },
+      {
+        format_id: '135',
+        ext: 'mp4',
+        resolution: '480p Standard',
+        fps: 30,
+        vcodec: 'h264',
+        acodec: 'aac',
+        direct_url: `/api/download?url=${encodeURIComponent(canonicalUrl)}&formatId=135`,
+        asset_type: 'video',
+        note: 'Standard Definition 480p Video',
       },
       {
         format_id: '18',
         ext: 'mp4',
-        resolution: '360p Standard (MP4)',
+        resolution: '360p Standard',
         fps: 30,
         vcodec: 'h264',
         acodec: 'aac',
         direct_url: `/api/download?url=${encodeURIComponent(canonicalUrl)}&formatId=18`,
         asset_type: 'video',
-        note: 'Standard Definition 360p MP4 Video',
+        note: 'Standard Definition 360p Video',
+      },
+      {
+        format_id: '133',
+        ext: 'mp4',
+        resolution: '240p Low Data',
+        fps: 30,
+        vcodec: 'h264',
+        acodec: 'aac',
+        direct_url: `/api/download?url=${encodeURIComponent(canonicalUrl)}&formatId=133`,
+        asset_type: 'video',
+        note: 'Low Bitrate 240p Video',
       },
       {
         format_id: 'audio_best',
@@ -162,7 +195,7 @@ async function getYouTubeFallbackInfo(targetUrl: string) {
         acodec: 'mp3',
         direct_url: `/api/download?url=${encodeURIComponent(canonicalUrl)}&formatId=audio_best&audioOnly=true`,
         asset_type: 'audio',
-        note: 'Original Audio Track (MP3 Format)',
+        note: 'Original High Quality Audio Track (MP3)',
       },
     ];
 
@@ -189,9 +222,7 @@ async function getYtDlpInfo(targetUrl: string, browserCookie?: string) {
       '--dump-json',
       '--no-warnings',
       '--socket-timeout',
-      '10',
-      '--extractor-args',
-      'youtube:player_client=android,web',
+      '15',
       '--user-agent',
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     ];
@@ -202,7 +233,7 @@ async function getYtDlpInfo(targetUrl: string, browserCookie?: string) {
 
     args.push(targetUrl);
 
-    const { stdout } = await execFileAsync('yt-dlp', args, { maxBuffer: 15 * 1024 * 1024, timeout: 15000 });
+    const { stdout } = await execFileAsync('yt-dlp', args, { maxBuffer: 15 * 1024 * 1024, timeout: 20000 });
 
     if (!stdout || !stdout.trim()) return null;
     const parsed = JSON.parse(stdout.trim().split('\n')[0]);
@@ -223,7 +254,6 @@ async function getYtDlpInfo(targetUrl: string, browserCookie?: string) {
         return;
 
       const isAudioOnly = (fmt.vcodec === 'none' || !fmt.vcodec) && fmt.acodec && fmt.acodec !== 'none';
-      const isVideoOnly = (fmt.acodec === 'none' || !fmt.acodec) && fmt.vcodec && fmt.vcodec !== 'none';
 
       let resolution = 'Standard';
       if (isAudioOnly) {
@@ -233,10 +263,6 @@ async function getYtDlpInfo(targetUrl: string, browserCookie?: string) {
         if (fmt.fps && fmt.fps > 30) resolution += `${fmt.fps}`;
       } else if (fmt.format_note) {
         resolution = fmt.format_note;
-      }
-
-      if (isVideoOnly) {
-        resolution += ' (Video Only)';
       }
 
       const key = `${resolution}_${fmt.ext}`;

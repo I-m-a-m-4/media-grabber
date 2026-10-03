@@ -6,6 +6,16 @@ service cloud.firestore {
       allow read, create, update: if request.auth != null;
     }
     
+    // Downloads activity log
+    match /downloads/{downloadId} {
+      allow read, create, update: if request.auth != null;
+    }
+
+    // Analytics summary counters
+    match /analytics/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
     // Payments collection: allow write when payment processed, read restricted to admin
     match /payments/{paymentId} {
       allow create: if request.auth != null;

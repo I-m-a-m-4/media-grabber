@@ -890,3 +890,47 @@ async fn download_direct_file(d_url: &str, download_dir: &str) -> Result<String,
     ))
 }
 
+#[tauri::command]
+pub async fn open_downloads_folder(custom_path: Option<String>) -> Result<(), String> {
+    let target_path = match custom_path {
+        Some(ref p) if !p.trim().is_empty() => std::path::PathBuf::from(p.trim()),
+        _ => dirs::download_dir().ok_or("Could not find download directory")?,
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = std::process::Command::new("explorer");
+        if target_path.is_file() {
+            cmd.arg(format!("/select,{}", target_path.display()));
+        } else {
+            cmd.arg(&target_path);
+        }
+        cmd.spawn().map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = std::process::Command::new("open");
+        if target_path.is_file() {
+            cmd.arg("-R").arg(&target_path);
+        } else {
+            cmd.arg(&target_path);
+        }
+        cmd.spawn().map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let mut cmd = std::process::Command::new("xdg-open");
+        let dir_to_open = if target_path.is_file() {
+            target_path.parent().unwrap_or(&target_path)
+        } else {
+            &target_path
+        };
+        cmd.arg(dir_to_open);
+        cmd.spawn().map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+
+    Ok(())
+}
+
