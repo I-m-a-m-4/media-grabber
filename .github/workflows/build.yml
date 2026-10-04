@@ -92,12 +92,45 @@ jobs:
           prerelease: false
           args: ${{ matrix.args }}
 
+      - name: Build and Package MSIX for Microsoft Store
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $pkgVersion = (Get-Content package.json | ConvertFrom-Json).version
+          $msixVersion = "$pkgVersion.0"
+          Write-Host "Preparing MSIX package for version: $msixVersion"
+          
+          $packDir = "$env:RUNNER_TEMP\MediaGrabberPack"
+          New-Item -ItemType Directory -Path "$packDir\Assets" -Force | Out-Null
+
+          Copy-Item "src-tauri\target\release\media-grabber.exe" -Destination "$packDir\media-grabber.exe" -Force
+          Copy-Item "src-tauri\bin\yt-dlp-x86_64-pc-windows-msvc.exe" -Destination "$packDir\yt-dlp.exe" -Force
+          Copy-Item "src-tauri\icons\*" -Destination "$packDir\Assets" -Recurse -Force
+
+          $manifestPath = "$packDir\AppxManifest.xml"
+          Copy-Item "src-tauri\msix\AppxManifest.xml" -Destination $manifestPath -Force
+          $manifestXml = [xml](Get-Content $manifestPath)
+          $manifestXml.Package.Identity.Version = $msixVersion
+          $manifestXml.Save($manifestPath)
+
+          $makeappx = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\makeappx.exe" | Select-Object -Last 1).FullName
+          Write-Host "Using makeappx: $makeappx"
+          $outputMsix = "MediaGrabber_${pkgVersion}_x64.msix"
+          & $makeappx pack /d "$packDir" /p "$outputMsix" /nv /o
+
+          Write-Host "Uploading $outputMsix to GitHub Release app-v$pkgVersion..."
+          gh release upload "app-v$pkgVersion" "$outputMsix" --clobber
+
       - name: Upload Desktop Installer Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: desktop-bundles-${{ matrix.platform }}
-          path: src-tauri/target/release/bundle/
+          path: |
+            src-tauri/target/release/bundle/
+            *.msix
 
   build-android-tauri:
     needs: build-web

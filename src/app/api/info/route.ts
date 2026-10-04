@@ -969,11 +969,30 @@ async function getInstagramFallbackInfo(targetUrl: string) {
                           html.match(/meta\s+content="([^"]+)"\s+(?:property|name)="og:image"/i)?.[1];
             if (ogImg) addImage(ogImg, 'Header / Avatar Image');
 
-            const ogTitle = html.match(/meta\s+(?:property|name)="og:title"\s+content="([^"]+)"/i)?.[1];
-            if (ogTitle && title.startsWith('@')) title = ogTitle;
+            const ogTitle = html.match(/meta\s+(?:property|name)="og:title"\s+content="([^"]+)"/i)?.[1] ||
+                          html.match(/meta\s+content="([^"]+)"\s+(?:property|name)="og:title"/i)?.[1];
+            if (ogTitle) {
+              const cleanTitle = ogTitle
+                .replace(/&quot;/g, '"')
+                .replace(/&#039;/g, "'")
+                .replace(/&#39;/g, "'")
+                .replace(/&amp;/g, '&')
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>');
+              if (!isProfile || title.startsWith('@')) title = cleanTitle;
+            }
 
-            const ogDesc = html.match(/meta\s+(?:property|name)="og:description"\s+content="([^"]+)"/i)?.[1];
-            if (ogDesc && !description) description = ogDesc;
+            const ogDesc = html.match(/meta\s+(?:property|name)="og:description"\s+content="([^"]+)"/i)?.[1] ||
+                          html.match(/meta\s+content="([^"]+)"\s+(?:property|name)="og:description"/i)?.[1];
+            if (ogDesc && !description) {
+              description = ogDesc
+                .replace(/&quot;/g, '"')
+                .replace(/&#039;/g, "'")
+                .replace(/&#39;/g, "'")
+                .replace(/&amp;/g, '&')
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>');
+            }
 
             const rawUrlMatches = html.match(/https?:\\?\/\\?\/[^\s"'\\]*(?:scontent|fbcdn)[^\s"'\\]*/gi) || [];
             for (const raw of rawUrlMatches) {

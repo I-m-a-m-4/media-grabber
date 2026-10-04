@@ -49,7 +49,14 @@ pub async fn get_media_info(
         ));
     }
 
-    // 2. Engine 1: Dedicated Twitter / X resolver (fast direct MP4 stream extraction)
+    // 2. Engine 1: Dedicated Instagram resolver
+    if clean_url.contains("instagram.com") || clean_url.contains("instagr.am") {
+        if let Ok(info) = fetch_instagram_info(clean_url, &security_report).await {
+            return Ok(info);
+        }
+    }
+
+    // 3. Engine 2: Dedicated Twitter / X resolver (fast direct MP4 stream extraction)
     if clean_url.contains("twitter.com") || clean_url.contains("x.com") {
         if let Ok(info) = fetch_twitter_info(clean_url, &security_report).await {
             return Ok(info);
@@ -279,6 +286,292 @@ async fn fetch_twitter_info(
         duration,
         uploader: Some(uploader),
         site_name: Some("Twitter / X".to_string()),
+        formats: formats_list,
+        images: images_list,
+        security: security_report.clone(),
+    })
+}
+
+fn decode_html_entities(s: &str) -> String {
+    s.replace("&quot;", "\"")
+        .replace("&#039;", "'")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+}
+
+fn clean_instagram_media_url(raw: &str) -> String {
+    raw.replace(r#"\\/"#, "/")
+        .replace(r#"\/"#, "/")
+        .replace(r#"\u002f"#, "/")
+        .replace(r#"\u002F"#, "/")
+        .replace(r#"\u0026"#, "&")
+        .replace(r#"\u00253D"#, "=")
+        .replace(r#"\u00253d"#, "=")
+        .replace(r#"\u002526"#, "&")
+        .replace("&amp;", "&")
+}
+
+fn add_instagram_image(
+    raw_url: &str,
+    note: &str,
+    images_list: &mut Vec<FormatInfo>,
+    seen_urls: &mut std::collections::HashSet<String>,
+    seen_filenames: &mut std::collections::HashSet<String>,
+) {
+    let mut clean = clean_instagram_media_url(raw_url);
+    if clean.starts_with("//") {
+        clean = format!("https:{}", clean);
+    }
+    if seen_urls.contains(&clean) {
+        return;
+    }
+    seen_urls.insert(clean.clone());
+
+    if let Ok(parsed) = url::Url::parse(&clean) {
+        if let Some(seg) = parsed.path_segments().and_then(|mut s| s.next_back()) {
+            if seg.contains(".jpg") || seg.contains(".png") || seg.contains(".webp") {
+                if seen_filenames.contains(seg) {
+                    return;
+                }
+                seen_filenames.insert(seg.to_string());
+            }
+        }
+    }
+
+    if clean.contains("rsrc.php")
+        || clean.contains("/rsrc/")
+        || clean.contains("static.cdninstagram.com")
+        || clean.ends_with(".com")
+        || clean.ends_with(".com/")
+        || clean.len() < 35
+    {
+        return;
+    }
+
+    images_list.push(FormatInfo {
+        format_id: format!("ig_img_{}", images_list.len() + 1),
+        ext: "jpg".to_string(),
+        resolution: "High Res Asset".to_string(),
+        fps: None,
+        vcodec: "none".to_string(),
+        acodec: "none".to_string(),
+        filesize: None,
+        note: Some(note.to_string()),
+        direct_url: Some(clean),
+        asset_type: "image".to_string(),
+    });
+}
+
+fn add_instagram_video(
+    raw_url: &str,
+    note: &str,
+    formats_list: &mut Vec<FormatInfo>,
+    seen_urls: &mut std::collections::HashSet<String>,
+) {
+    let mut clean = clean_instagram_media_url(raw_url);
+    if clean.starts_with("//") {
+        clean = format!("https:{}", clean);
+    }
+    if seen_urls.contains(&clean) {
+        return;
+    }
+    seen_urls.insert(clean.clone());
+
+    if clean.len() < 35 || clean.contains("rsrc.php") {
+        return;
+    }
+
+    let vid_idx = formats_list.len() + 1;
+    formats_list.push(FormatInfo {
+        format_id: format!("ig_vid_{}", vid_idx),
+        ext: "mp4".to_string(),
+        resolution: "HD Video (MP4)".to_string(),
+        fps: Some(30.0),
+        vcodec: "h264".to_string(),
+        acodec: "aac".to_string(),
+        filesize: None,
+        note: Some(note.to_string()),
+        direct_url: Some(clean.clone()),
+        asset_type: "video".to_string(),
+    });
+
+    formats_list.push(FormatInfo {
+        format_id: format!("ig_audio_{}", vid_idx),
+        ext: "mp3".to_string(),
+        resolution: "Audio Only (MP3 Track)".to_string(),
+        fps: None,
+        vcodec: "none".to_string(),
+        acodec: "mp3".to_string(),
+        filesize: None,
+        note: Some(format!("Audio - {}", note)),
+        direct_url: Some(clean),
+        asset_type: "audio".to_string(),
+    });
+}
+
+async fn fetch_instagram_info(
+    url: &str,
+    security_report: &SecurityReport,
+) -> Result<MediaInfo, String> {
+    let clean_url = url.split('?').next().unwrap_or(url).trim_end_matches('/');
+
+    let post_re = Regex::new(r"(?i)instagram\.com/(?:p|reel|tv)/([^/?#&]+)").unwrap();
+    let profile_re = Regex::new(r"(?i)instagram\.com/([^/?#&]+)").unwrap();
+
+    let post_id = post_re
+        .captures(clean_url)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string());
+    let username = if post_id.is_none() {
+        profile_re
+            .captures(clean_url)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().replace('@', ""))
+    } else {
+        None
+    };
+
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut title = if let Some(ref pid) = post_id {
+        format!("Instagram Post ({})", pid)
+    } else if let Some(ref u) = username {
+        format!("@{} Instagram Profile", u)
+    } else {
+        "Instagram Media".to_string()
+    };
+
+    let mut description: Option<String> = None;
+    let uploader = if let Some(ref u) = username {
+        Some(format!("Instagram • @{}", u))
+    } else {
+        Some("Instagram".to_string())
+    };
+
+    let mut formats_list: Vec<FormatInfo> = Vec::new();
+    let mut images_list: Vec<FormatInfo> = Vec::new();
+    let mut seen_urls = std::collections::HashSet::new();
+    let mut seen_filenames = std::collections::HashSet::new();
+
+    let fetch_urls = if let Some(ref pid) = post_id {
+        vec![
+            format!("https://www.instagram.com/p/{}/embed/captioned/", pid),
+            format!("https://www.instagram.com/p/{}/", pid),
+            format!("https://www.instagram.com/reel/{}/embed/captioned/", pid),
+        ]
+    } else if let Some(ref u) = username {
+        vec![
+            format!("https://www.instagram.com/{}/embed/", u),
+            format!("https://www.instagram.com/{}/", u),
+        ]
+    } else {
+        vec![url.to_string()]
+    };
+
+    let og_title_re = Regex::new(r#"(?i)<meta\s+(?:property|name)=["']og:title["']\s+content=["']([^"']+)["']"#).unwrap();
+    let og_desc_re = Regex::new(r#"(?i)<meta\s+(?:property|name)=["']og:description["']\s+content=["']([^"']+)["']"#).unwrap();
+    let og_img_re = Regex::new(r#"(?i)<meta\s+(?:property|name)=["']og:image["']\s+content=["']([^"']+)["']"#).unwrap();
+    let cdn_re = Regex::new(r#"(?i)https?:\\?/\\?/[^\s"'\\<>]*(?:scontent|fbcdn)[^\s"'\\<>]*"#).unwrap();
+    let video_re = Regex::new(r#"(?i)<video[^>]+src=["']([^"']+)["']"#).unwrap();
+    let video_json_re = Regex::new(r#"(?i)"video_url"\s*:\s*"([^"]+)""#).unwrap();
+
+    for f_url in fetch_urls {
+        if let Ok(resp) = client
+            .get(&f_url)
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .send()
+            .await
+        {
+            if resp.status().is_success() {
+                if let Ok(html) = resp.text().await {
+                    if let Some(caps) = og_title_re.captures(&html) {
+                        if let Some(m) = caps.get(1) {
+                            let raw_t = decode_html_entities(m.as_str());
+                            if !raw_t.is_empty() {
+                                title = raw_t;
+                            }
+                        }
+                    }
+
+                    if let Some(caps) = og_desc_re.captures(&html) {
+                        if let Some(m) = caps.get(1) {
+                            let raw_d = decode_html_entities(m.as_str());
+                            if !raw_d.is_empty() && description.is_none() {
+                                description = Some(raw_d);
+                            }
+                        }
+                    }
+
+                    if let Some(caps) = og_img_re.captures(&html) {
+                        if let Some(m) = caps.get(1) {
+                            add_instagram_image(
+                                m.as_str(),
+                                "Cover Art / Poster",
+                                &mut images_list,
+                                &mut seen_urls,
+                                &mut seen_filenames,
+                            );
+                        }
+                    }
+
+                    for caps in video_re.captures_iter(&html) {
+                        if let Some(m) = caps.get(1) {
+                            add_instagram_video(
+                                m.as_str(),
+                                "Instagram Video Stream",
+                                &mut formats_list,
+                                &mut seen_urls,
+                            );
+                        }
+                    }
+
+                    for caps in video_json_re.captures_iter(&html) {
+                        if let Some(m) = caps.get(1) {
+                            add_instagram_video(
+                                m.as_str(),
+                                "Instagram Video Stream",
+                                &mut formats_list,
+                                &mut seen_urls,
+                            );
+                        }
+                    }
+
+                    for caps in cdn_re.captures_iter(&html) {
+                        if let Some(m) = caps.get(0) {
+                            let note = format!("Instagram Media Asset {}", images_list.len() + 1);
+                            add_instagram_image(
+                                m.as_str(),
+                                &note,
+                                &mut images_list,
+                                &mut seen_urls,
+                                &mut seen_filenames,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if images_list.is_empty() && formats_list.is_empty() {
+        return Err("Could not extract media assets from this Instagram link. The post may be private or expired.".to_string());
+    }
+
+    let primary_thumb = images_list.first().and_then(|img| img.direct_url.clone());
+
+    Ok(MediaInfo {
+        title,
+        description,
+        thumbnail: primary_thumb,
+        duration: None,
+        uploader,
+        site_name: Some("Instagram".to_string()),
         formats: formats_list,
         images: images_list,
         security: security_report.clone(),
@@ -672,7 +965,7 @@ async fn fetch_app_store_info(
 
     let mut screenshot_idx = 1;
 
-    let mut add_screenshot = |img_url: String, list: &mut Vec<FormatInfo>, seen: &mut std::collections::HashSet<String>, idx: &mut usize| {
+    let add_screenshot = |img_url: String, list: &mut Vec<FormatInfo>, seen: &mut std::collections::HashSet<String>, idx: &mut usize| {
         if !seen.contains(&img_url) && !img_url.contains("data:image") && !img_url.ends_with(".svg") {
             seen.insert(img_url.clone());
             list.push(FormatInfo {
@@ -1006,13 +1299,49 @@ pub async fn download_media(
 }
 
 async fn download_direct_file(d_url: &str, download_dir: &str) -> Result<String, String> {
+    let mut actual_url = d_url.to_string();
+    if actual_url.contains("directUrl=") {
+        if let Some(pos) = actual_url.find("directUrl=") {
+            let sub = &actual_url[pos + 10..];
+            let raw_param = sub.split('&').next().unwrap_or(sub);
+            let decoded = url::form_urlencoded::parse(format!("u={}", raw_param).as_bytes())
+                .find(|(k, _)| k == "u")
+                .map(|(_, v)| v.into_owned())
+                .unwrap_or_else(|| raw_param.to_string());
+            if decoded.starts_with("http://") || decoded.starts_with("https://") {
+                actual_url = decoded;
+            }
+        }
+    }
+    if actual_url.starts_with("//") {
+        actual_url = format!("https:{}", actual_url);
+    }
+
+    let is_instagram = actual_url.contains("instagram.com")
+        || actual_url.contains("cdninstagram.com")
+        || actual_url.contains("fbcdn.net");
+
+    let is_twitter = actual_url.contains("twitter.com")
+        || actual_url.contains("x.com")
+        || actual_url.contains("twimg.com");
+
     let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
         .build()
         .map_err(|e| e.to_string())?;
 
-    let resp = client
-        .get(d_url)
+    let mut req = client.get(&actual_url);
+    if is_instagram {
+        req = req
+            .header(reqwest::header::REFERER, "https://www.instagram.com/")
+            .header(reqwest::header::ORIGIN, "https://www.instagram.com");
+    } else if is_twitter {
+        req = req
+            .header(reqwest::header::REFERER, "https://x.com/")
+            .header(reqwest::header::ORIGIN, "https://x.com");
+    }
+
+    let resp = req
         .send()
         .await
         .map_err(|e| format!("Failed to fetch file: {}", e))?;
@@ -1127,5 +1456,26 @@ pub async fn open_downloads_folder(custom_path: Option<String>) -> Result<(), St
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_instagram_resolver() {
+        let report = SecurityReport {
+            is_safe: true,
+            risk_level: "safe".to_string(),
+            domain: "instagram.com".to_string(),
+            protocol: "https:".to_string(),
+            category: "media_stream".to_string(),
+            warnings: vec![],
+            file_extension: None,
+        };
+        let res = fetch_instagram_info("https://www.instagram.com/p/DPDnqMwDHV5/?img_index=1", &report).await;
+        println!("RESULT: {:?}", res);
+        assert!(res.is_ok());
+    }
 }
 

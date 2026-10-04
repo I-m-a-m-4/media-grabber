@@ -9,6 +9,7 @@ export const viewport: Viewport = {
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://usemediagrabber.vercel.app"),
+  referrer: "no-referrer",
   title: {
     default: "Universal Media Grabber - Free Online Video & Audio Downloader",
     template: "%s | Universal Media Grabber",

@@ -90,29 +90,51 @@ async function handleDownloadRequest(
   audioOnly?: boolean
 ) {
   try {
-    const targetUrl = directUrl || pageUrl;
+    // Unwrap target URL and direct URL if proxied
+    let actualDirectUrl = directUrl || '';
+    while (actualDirectUrl && actualDirectUrl.includes('directUrl=')) {
+      try {
+        const splitPart = actualDirectUrl.split('directUrl=')[1].split('&')[0];
+        const decoded = decodeURIComponent(splitPart);
+        if (decoded === actualDirectUrl) break;
+        actualDirectUrl = decoded;
+      } catch (e) {
+        break;
+      }
+    }
+
+    let targetUrl = actualDirectUrl || pageUrl;
+    while (targetUrl && targetUrl.includes('directUrl=')) {
+      try {
+        const splitPart = targetUrl.split('directUrl=')[1].split('&')[0];
+        const decoded = decodeURIComponent(splitPart);
+        if (decoded === targetUrl) break;
+        targetUrl = decoded;
+      } catch (e) {
+        break;
+      }
+    }
+
+    const isDirectAvailable = Boolean(
+      actualDirectUrl &&
+      actualDirectUrl.trim().length > 0 &&
+      !actualDirectUrl.includes('googlevideo.com')
+    );
+
     const isYtStream =
       pageUrl.includes('youtube.com') ||
       pageUrl.includes('youtu.be') ||
       pageUrl.includes('tiktok.com') ||
       pageUrl.includes('vimeo.com') ||
-      pageUrl.includes('instagram.com') ||
       pageUrl.includes('twitter.com') ||
       pageUrl.includes('x.com') ||
       pageUrl.includes('facebook.com') ||
-      (directUrl && directUrl.includes('googlevideo.com'));
+      (!isDirectAvailable && pageUrl.includes('instagram.com'));
 
     const isAudio = audioOnly || formatId === 'audio_best' || formatId?.includes('audio') || formatId?.includes('mp3');
 
     // 1. YouTube/Video stream download via yt-dlp temp file stream
-    // Only invoke yt-dlp when no directUrl is available or when directUrl is a protected googlevideo stream or proxied download URL
-    const isDirectAvailable =
-      directUrl &&
-      directUrl.trim().length > 0 &&
-      !directUrl.includes('googlevideo.com') &&
-      !directUrl.startsWith('/api/download') &&
-      !directUrl.includes('/api/download');
-
+    // Only invoke yt-dlp when no directUrl is available or when directUrl is a protected googlevideo stream
     if (isYtStream && !isDirectAvailable) {
       const ytResult = await downloadWithYtDlp(pageUrl, formatId, isAudio);
       if (ytResult && ytResult.buffer.length > 0) {
@@ -146,13 +168,7 @@ async function handleDownloadRequest(
     }
 
     // 2. Standard direct media asset / stream proxy fetch
-    let fetchUrl = targetUrl;
-    
-    // Unwrap if the URL was proxied for UI display
-    if (fetchUrl.startsWith('/api/download?directUrl=')) {
-      fetchUrl = decodeURIComponent(fetchUrl.split('directUrl=')[1].split('&')[0]);
-    }
-    
+    let fetchUrl = actualDirectUrl || targetUrl;
     if (fetchUrl.startsWith('//')) {
       fetchUrl = `https:${fetchUrl}`;
     }

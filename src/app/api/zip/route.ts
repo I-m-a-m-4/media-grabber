@@ -35,17 +35,43 @@ export async function POST(request: Request) {
     let index = 1;
     await Promise.all(
       images.map(async (imgItem: any) => {
-        const directUrl = imgItem.direct_url;
+        let directUrl = imgItem.direct_url;
         if (!directUrl) return;
 
-        let fetchUrl = directUrl.startsWith('//') ? `https:${directUrl}` : directUrl;
+        let fetchUrl = directUrl;
+        while (fetchUrl && fetchUrl.includes('directUrl=')) {
+          try {
+            const splitPart = fetchUrl.split('directUrl=')[1].split('&')[0];
+            const decoded = decodeURIComponent(splitPart);
+            if (decoded === fetchUrl) break;
+            fetchUrl = decoded;
+          } catch (e) {
+            break;
+          }
+        }
+        if (fetchUrl.startsWith('//')) {
+          fetchUrl = `https:${fetchUrl}`;
+        }
+
+        const reqHeaders: Record<string, string> = {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36',
+          'Accept': 'image/*,*/*',
+        };
+
+        if (
+          fetchUrl.includes('instagram.com') ||
+          fetchUrl.includes('cdninstagram.com') ||
+          fetchUrl.includes('fbcdn.net') ||
+          (url && url.includes('instagram.com'))
+        ) {
+          reqHeaders['Referer'] = 'https://www.instagram.com/';
+          reqHeaders['Origin'] = 'https://www.instagram.com';
+        }
+
         try {
           const res = await fetch(fetchUrl, {
-            headers: {
-              'User-Agent':
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36',
-              'Accept': 'image/*,*/*',
-            },
+            headers: reqHeaders,
           });
 
           if (!res.ok) return;

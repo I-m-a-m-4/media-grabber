@@ -6,6 +6,7 @@ import { downloadDir } from "@tauri-apps/api/path";
 import { openPath } from "@tauri-apps/plugin-opener";
 
 import Link from "next/link";
+import JSZip from "jszip";
 import { useFlutterwave, closePaymentModal } from "flutterwave-react-v3";
 import { initAnonymousUser, recordPaymentTransaction, recordDownloadActivity, auth } from "../lib/firebase";
 
@@ -445,7 +446,7 @@ function HistoryItemCard({ item, removeHistoryItem, handleOpenDownloadsFolder, r
     <li className={`history-item ${isDownloading ? "item-downloading" : ""} ${isFailed ? "item-failed" : ""}`}>
       <div className="history-thumbnail-wrapper">
         {item.thumbnail ? (
-          <img src={item.thumbnail} alt="" className="history-thumbnail" />
+          <img src={item.thumbnail} alt="" className="history-thumbnail" referrerPolicy="no-referrer" />
         ) : (
           <div className="history-thumbnail-placeholder">No Img</div>
         )}
@@ -833,18 +834,28 @@ export default function App() {
             directUrl: directUrl || null,
           });
         } else {
-          const selectedFmtObj = mediaInfo.formats.find((f) => f.format_id === fmtToUse);
+          const selectedFmtObj =
+            mediaInfo.formats.find((f) => f.format_id === fmtToUse) ||
+            mediaInfo.images?.find((img) => img.format_id === fmtToUse);
           const streamUrlToUse = directUrl || selectedFmtObj?.direct_url;
 
           if (streamUrlToUse || fmtToUse) {
-            const ext = audioOnly ? "mp3" : (selectedFmtObj?.ext || "mp4");
+            const isImage =
+              selectedFmtObj?.asset_type === "image" ||
+              selectedFmtObj?.asset_type === "screenshot" ||
+              (directUrl && /\.(jpg|jpeg|png|webp|gif|svg|avif)/i.test(directUrl)) ||
+              (itemNote && /(image|screenshot|poster|thumbnail)/i.test(itemNote));
+
+            const ext = audioOnly
+              ? "mp3"
+              : selectedFmtObj?.ext || (isImage ? "jpg" : "mp4");
             const noteLabel = audioOnly
               ? "Audio_MP3"
-              : (itemNote || selectedFmtObj?.resolution || "Media_Stream");
+              : (itemNote || selectedFmtObj?.resolution || (isImage ? "Asset_Image" : "Media_Stream"));
             const baseName = `${mediaInfo.title || "media"}_${noteLabel}`.replace(/[^a-zA-Z0-9_-]/g, "_");
             const safeName = baseName.endsWith(`.${ext}`) ? baseName : `${baseName}.${ext}`;
             
-            const downloadApiUrl = `/api/download?url=${encodeURIComponent(url.trim())}&directUrl=${encodeURIComponent(directUrl || '')}&formatId=${encodeURIComponent(fmtToUse || '')}&audioOnly=${audioOnly}&filename=${encodeURIComponent(safeName)}`;
+            const downloadApiUrl = `/api/download?url=${encodeURIComponent(url.trim())}&directUrl=${encodeURIComponent(streamUrlToUse || '')}&formatId=${encodeURIComponent(fmtToUse || '')}&audioOnly=${audioOnly}&filename=${encodeURIComponent(safeName)}`;
             
             const a = document.createElement("a");
             a.href = downloadApiUrl;
@@ -854,6 +865,8 @@ export default function App() {
             document.body.removeChild(a);
             resMsg = audioOnly
               ? "Audio MP3 stream download started! Check your Downloads folder."
+              : isImage
+              ? "Image download started! Check your Downloads folder."
               : "Video stream download started! Check your Downloads folder.";
           } else {
             const res = await fetch("/api/download", {
@@ -950,24 +963,71 @@ export default function App() {
     setSuccessMsg("Generating ZIP archive bundle of all media assets...");
 
     try {
-      const res = await fetch("/api/zip", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: mediaInfo.title,
-          description: mediaInfo.description || mediaInfo.extracted_text,
-          uploader: mediaInfo.uploader,
-          site_name: mediaInfo.site_name,
-          url: url.trim(),
-          images: mediaInfo.images,
-        }),
-      });
+      let blob: Blob | null = null;
 
-      if (!res.ok) {
-        throw new Error("Failed to generate ZIP archive bundle.");
+      // Try server route first when running on Next.js web server
+      if (!isTauriApp()) {
+        try {
+          const res = await fetch("/api/zip", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: mediaInfo.title,
+              description: mediaInfo.description || mediaInfo.extracted_text,
+              uploader: mediaInfo.uploader,
+              site_name: mediaInfo.site_name,
+              url: url.trim(),
+              images: mediaInfo.images,
+            }),
+          });
+          if (res.ok) {
+            blob = await res.blob();
+          }
+        } catch (serverZipErr) {
+          console.warn("Server ZIP generation failed, trying client-side JSZip:", serverZipErr);
+        }
       }
 
-      const blob = await res.blob();
+      // If in Tauri desktop app or server route was unavailable, bundle in-browser via JSZip
+      if (!blob) {
+        const zip = new JSZip();
+        let metaText = `UNIVERSAL MEDIA GRABBER ASSET BUNDLE\n=====================================\n\n`;
+        metaText += `Title: ${mediaInfo.title || 'N/A'}\n`;
+        metaText += `Source: ${mediaInfo.uploader || mediaInfo.site_name || 'N/A'}\n`;
+        metaText += `Original URL: ${url.trim() || 'N/A'}\n\n`;
+        zip.file("metadata.txt", metaText);
+
+        const imgFolder = zip.folder("images");
+        await Promise.all(
+          mediaInfo.images.map(async (imgItem, idx) => {
+            let directUrl = imgItem.direct_url;
+            if (!directUrl) return;
+            while (directUrl && directUrl.includes('directUrl=')) {
+              try {
+                const part = directUrl.split('directUrl=')[1].split('&')[0];
+                directUrl = decodeURIComponent(part);
+              } catch (e) {
+                break;
+              }
+            }
+            if (directUrl.startsWith('//')) directUrl = `https:${directUrl}`;
+
+            try {
+              const r = await fetch(directUrl);
+              if (r.ok) {
+                const buf = await r.arrayBuffer();
+                const ext = imgItem.ext || 'jpg';
+                const safeName = (imgItem.note || `asset_${idx + 1}`).replace(/[^a-zA-Z0-9_-]/g, '_');
+                imgFolder?.file(`${safeName}.${ext}`, buf);
+              }
+            } catch (err) {
+              console.warn("Client failed to fetch image for zip:", directUrl, err);
+            }
+          })
+        );
+        blob = await zip.generateAsync({ type: "blob" });
+      }
+
       const safeTitle = (mediaInfo.title || "media_assets").replace(/[^a-zA-Z0-9_-]/g, "_");
       const downloadUrl = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -1318,6 +1378,7 @@ export default function App() {
                     src={mediaInfo.thumbnail || (mediaInfo.images && mediaInfo.images[0].direct_url)}
                     alt={mediaInfo.title}
                     className="media-thumbnail"
+                    referrerPolicy="no-referrer"
                   />
                 ) : (
                   <div className="thumbnail-placeholder">
@@ -1409,7 +1470,7 @@ export default function App() {
                         title="Click to expand / view high-res image"
                       >
                         {imgItem.direct_url ? (
-                          <img src={imgItem.direct_url} alt={imgItem.note || "Asset"} className="image-preview" />
+                          <img src={imgItem.direct_url} alt={imgItem.note || "Asset"} className="image-preview" referrerPolicy="no-referrer" />
                         ) : (
                           <div className="image-placeholder">Asset Image</div>
                         )}
@@ -1860,6 +1921,7 @@ export default function App() {
                   src={previewImage.direct_url}
                   alt={previewImage.note || "High Resolution Preview"}
                   className="lightbox-img"
+                  referrerPolicy="no-referrer"
                 />
               ) : (
                 <p>No high-resolution preview available.</p>
