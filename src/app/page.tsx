@@ -1125,26 +1125,6 @@ export default function App() {
             <h1 className="title">Universal Media Grabber</h1>
           </div>
           <div className="top-actions-group">
-            <Link
-              href="/admin-imamshaffy"
-              className="admin-link-btn"
-              title="Admin Dashboard"
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "0.35rem",
-                fontSize: "0.85rem",
-                fontWeight: 600,
-                color: "#ff6600",
-                textDecoration: "none",
-                padding: "0.45rem 0.85rem",
-                borderRadius: "8px",
-                border: "1px solid rgba(255, 102, 0, 0.35)",
-                background: "rgba(255, 102, 0, 0.1)",
-              }}
-            >
-              <ShieldIcon /> Admin
-            </Link>
             <button
               className="support-btn"
               onClick={() => setShowSupportModal(true)}
