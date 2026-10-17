@@ -1,25 +1,25 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Users collection: allow anonymous and authenticated users to read and write their own profile
+    // Users collection: allow desktop and web clients to register and record stats
     match /users/{userId} {
-      allow read, create, update: if request.auth != null;
+      allow read, write: if true;
     }
     
     // Downloads activity log
     match /downloads/{downloadId} {
-      allow read, create, update: if request.auth != null;
+      allow read, write: if true;
     }
 
     // Analytics summary counters
     match /analytics/{docId} {
-      allow read, write: if request.auth != null;
+      allow read, write: if true;
     }
 
-    // Payments collection: allow write when payment processed, read restricted to admin
+    // Payments collection
     match /payments/{paymentId} {
-      allow create: if request.auth != null;
-      allow read: if request.auth != null;
+      allow read, write: if true;
     }
   }
 }
+

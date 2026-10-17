@@ -104,6 +104,7 @@ export default function AdminPage() {
   const [email, setEmail] = useState("belloimam431@gmail.com");
   const [passcode, setPasscode] = useState("");
   const [authError, setAuthError] = useState("");
+  const [loadError, setLoadError] = useState("");
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<"overview" | "retention" | "downloads" | "users" | "payments">("overview");
 
@@ -163,11 +164,16 @@ export default function AdminPage() {
 
   async function loadMetrics() {
     setLoading(true);
+    setLoadError("");
     try {
       const data = await fetchAdminMetrics();
+      if ((data as any).error) {
+        setLoadError((data as any).error);
+      }
       setMetrics(data as any);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to load metrics:", err);
+      setLoadError(err?.message || "Failed to load metrics from Firestore.");
     } finally {
       setLoading(false);
     }
@@ -335,6 +341,18 @@ export default function AdminPage() {
             </button>
           </div>
         </header>
+
+        {loadError && (
+          <div style={{ background: "rgba(255, 77, 77, 0.12)", border: "1px solid rgba(255, 77, 77, 0.3)", borderRadius: "10px", padding: "1rem 1.25rem", marginBottom: "1.5rem", color: "#ff6b6b", fontSize: "0.9rem", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "1rem" }}>
+            <span>
+              <strong>Note:</strong> {loadError}
+              {(loadError.toLowerCase().includes("client") || loadError.toLowerCase().includes("fetch") || loadError.toLowerCase().includes("failed")) && " (An active Ad-blocker or Brave Shields might be blocking Google Firestore. Please whitelist this page.)"}
+            </span>
+            <button onClick={loadMetrics} style={{ background: "#ff4d4d", color: "#fff", border: "none", borderRadius: "6px", padding: "0.4rem 0.85rem", cursor: "pointer", fontSize: "0.8rem", fontWeight: "600" }}>
+              Retry
+            </button>
+          </div>
+        )}
 
         {/* Navigation Tabs */}
         <div style={{ display: "flex", gap: "0.5rem", marginBottom: "2rem", borderBottom: "1px solid var(--border-subtle)", paddingBottom: "0.75rem", overflowX: "auto" }}>

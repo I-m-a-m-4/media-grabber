@@ -430,9 +430,12 @@ export async function fetchAdminMetrics() {
       recentDownloads,
       cohorts: { singleVisit, returning2to5, powerUsers6plus },
     };
-  } catch (err) {
+  } catch (err: any) {
     console.error("Error fetching admin metrics:", err);
-    return emptyResult;
+    return {
+      ...emptyResult,
+      error: err?.message || String(err),
+    };
   }
 }
 
