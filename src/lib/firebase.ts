@@ -53,6 +53,8 @@ export interface UserProfile {
   isAnonymous: boolean;
   firstSeenAt: any;
   lastSeenAt: any;
+  lastActiveAt?: any;
+  lastActiveMs?: number;
   platform?: string;
   userAgent?: string;
   visitCount?: number;
@@ -62,6 +64,7 @@ export interface UserProfile {
   totalVideoExports?: number;
   totalAudioExports?: number;
   totalZipExports?: number;
+  supportClicks?: number;
 }
 
 export interface PaymentRecord {
@@ -280,11 +283,94 @@ export async function recordPaymentTransaction(paymentData: Omit<PaymentRecord, 
 }
 
 /**
+ * Record when a user clicks the "Support" button / opens support modal
+ */
+export async function recordSupportClick() {
+  if (!db || typeof window === "undefined") return;
+  try {
+    const user = auth.currentUser;
+    const uid = user?.uid || "anonymous_client";
+
+    // 1. Increment global count in analytics/summary
+    const summaryRef = doc(db, "analytics", "summary");
+    await setDoc(summaryRef, {
+      totalSupportClicks: increment(1),
+      lastSupportClickAt: serverTimestamp(),
+    }, { merge: true });
+
+    // 2. Increment user profile stat if user exists
+    if (user?.uid) {
+      const userRef = doc(db, "users", user.uid);
+      await setDoc(userRef, {
+        supportClicks: increment(1),
+        lastActiveAt: serverTimestamp(),
+      }, { merge: true });
+    }
+
+    // 3. Log event into support_clicks collection
+    const clickLogsRef = collection(db, "support_clicks");
+    await addDoc(clickLogsRef, {
+      uid,
+      platform: typeof window !== "undefined" && (window as any).__TAURI__ ? "Tauri Desktop" : "Web Browser",
+      createdAt: serverTimestamp(),
+    });
+  } catch (err: any) {
+    console.warn("Failed to record support click:", err?.message || err);
+  }
+}
+
+let lastHeartbeatSent = 0;
+
+/**
+ * Record a lightweight presence heartbeat for the user in Firestore.
+ * Throttled to at most once every 40 seconds to optimize Firestore quota.
+ */
+export async function recordHeartbeat(uid?: string) {
+  if (!db || typeof window === "undefined") return;
+  const targetUid = uid || auth.currentUser?.uid;
+  if (!targetUid) return;
+
+  const now = Date.now();
+  if (now - lastHeartbeatSent < 40000) {
+    return;
+  }
+  lastHeartbeatSent = now;
+
+  try {
+    const userRef = doc(db, "users", targetUid);
+    await setDoc(
+      userRef,
+      {
+        lastActiveAt: serverTimestamp(),
+        lastSeenAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  } catch (err) {
+    // Fail silently so as not to interrupt user experience
+  }
+}
+
+export interface HourlyTrafficItem {
+  hour: number;
+  label: string;
+  userCount: number;
+  desktopCount: number;
+  webCount: number;
+}
+
+/**
  * Fetch comprehensive metrics for Admin Dashboard
  */
 export async function fetchAdminMetrics() {
   const emptyResult = {
     totalUsers: 0,
+    activeNow: 0, // <= 2 min
+    active5m: 0,  // <= 5 min
+    active15m: 0, // <= 15 min
+    active1h: 0,  // <= 1 hour
+    active24h: 0, // <= 24 hours
+    hourlyTraffic: [] as HourlyTrafficItem[],
     dau: 0,
     wau: 0,
     mau: 0,
@@ -298,6 +384,7 @@ export async function fetchAdminMetrics() {
     totalZipExports: 0,
     totalPayments: 0,
     totalRevenue: 0,
+    totalSupportClicks: 0,
     desktopUsersCount: 0,
     webUsersCount: 0,
     users: [] as UserProfile[],
@@ -349,6 +436,7 @@ export async function fetchAdminMetrics() {
     }
 
     let totalExports = recentDownloads.length;
+    let totalSupportClicks = 0;
     if (summarySnap && summarySnap.exists()) {
       const sumData = summarySnap.data();
       totalExports = Math.max(totalExports, sumData.totalExports || 0);
@@ -356,11 +444,24 @@ export async function fetchAdminMetrics() {
       videoExportsCount = Math.max(videoExportsCount, sumData.totalVideoExports || 0);
       audioExportsCount = Math.max(audioExportsCount, sumData.totalAudioExports || 0);
       zipExportsCount = Math.max(zipExportsCount, sumData.totalZipExports || 0);
+      totalSupportClicks = Number(sumData.totalSupportClicks) || 0;
     }
 
-    // Calculate Active Users (DAU, WAU, MAU) and Retention
+    // Also accumulate from users list
+    let userClicksAccum = 0;
+    users.forEach((u) => {
+      userClicksAccum += Number(u.supportClicks) || 0;
+    });
+    totalSupportClicks = Math.max(totalSupportClicks, userClicksAccum);
+
+    // Calculate Active Users (Realtime Presence, Hourly Distribution, DAU, WAU, MAU)
     const nowMs = Date.now();
     const dayMs = 24 * 60 * 60 * 1000;
+    let activeNow = 0;
+    let active5m = 0;
+    let active15m = 0;
+    let active1h = 0;
+    let active24h = 0;
     let dau = 0;
     let wau = 0;
     let mau = 0;
@@ -371,6 +472,15 @@ export async function fetchAdminMetrics() {
     let singleVisit = 0;
     let returning2to5 = 0;
     let powerUsers6plus = 0;
+
+    // Initialize 24-hour traffic buckets
+    const hourlyTraffic: HourlyTrafficItem[] = Array.from({ length: 24 }, (_, i) => ({
+      hour: i,
+      label: `${i.toString().padStart(2, "0")}:00`,
+      userCount: 0,
+      desktopCount: 0,
+      webCount: 0,
+    }));
 
     users.forEach((u) => {
       const visits = Number(u.visitCount) || 1;
@@ -385,24 +495,48 @@ export async function fetchAdminMetrics() {
         returningUsers++;
       }
 
-      if (u.platform?.toLowerCase().includes("tauri") || u.platform?.toLowerCase().includes("desktop")) {
+      const isDesktop = u.platform?.toLowerCase().includes("tauri") || u.platform?.toLowerCase().includes("desktop");
+      if (isDesktop) {
         desktopCount++;
       } else {
         webCount++;
       }
 
-      let lastSeenMs = 0;
-      if (u.lastSeenAt?.toDate) lastSeenMs = u.lastSeenAt.toDate().getTime();
-      else if (u.lastSeenAt?.seconds) lastSeenMs = u.lastSeenAt.seconds * 1000;
-      else if (u.lastSeenAt) lastSeenMs = new Date(u.lastSeenAt).getTime();
+      // Check last active / last seen timestamp
+      let lastActiveMs = 0;
+      const rawActive = u.lastActiveAt || u.lastSeenAt;
+      if (rawActive?.toDate) lastActiveMs = rawActive.toDate().getTime();
+      else if (rawActive?.seconds) lastActiveMs = rawActive.seconds * 1000;
+      else if (rawActive) lastActiveMs = new Date(rawActive).getTime();
 
-      if (lastSeenMs > 0) {
-        const diff = nowMs - lastSeenMs;
-        if (diff <= dayMs) dau++;
+      u.lastActiveMs = lastActiveMs;
+
+      if (lastActiveMs > 0) {
+        const diff = nowMs - lastActiveMs;
+        if (diff <= 2 * 60 * 1000) activeNow++;
+        if (diff <= 5 * 60 * 1000) active5m++;
+        if (diff <= 15 * 60 * 1000) active15m++;
+        if (diff <= 60 * 60 * 1000) active1h++;
+
+        if (diff <= dayMs) {
+          active24h++;
+          dau++;
+          // Slot into hour bucket (local hour of the event)
+          const activeDate = new Date(lastActiveMs);
+          const hour = activeDate.getHours();
+          if (hour >= 0 && hour < 24) {
+            hourlyTraffic[hour].userCount++;
+            if (isDesktop) hourlyTraffic[hour].desktopCount++;
+            else hourlyTraffic[hour].webCount++;
+          }
+        }
         if (diff <= 7 * dayMs) wau++;
         if (diff <= 30 * dayMs) mau++;
       }
     });
+
+    // Sort users by most recently active first
+    users.sort((a, b) => (b.lastActiveMs || 0) - (a.lastActiveMs || 0));
 
     const totalUsers = users.length;
     const retentionRate = totalUsers > 0 ? (returningUsers / totalUsers) * 100 : 0;
@@ -410,6 +544,12 @@ export async function fetchAdminMetrics() {
 
     return {
       totalUsers,
+      activeNow: Math.max(activeNow, 0),
+      active5m: Math.max(active5m, 0),
+      active15m: Math.max(active15m, 0),
+      active1h: Math.max(active1h, 0),
+      active24h: Math.max(active24h, 0),
+      hourlyTraffic,
       dau: Math.max(dau, totalUsers > 0 ? 1 : 0),
       wau: Math.max(wau, totalUsers > 0 ? 1 : 0),
       mau: Math.max(mau, totalUsers > 0 ? 1 : 0),
@@ -423,6 +563,7 @@ export async function fetchAdminMetrics() {
       totalZipExports: zipExportsCount,
       totalPayments: payments.length,
       totalRevenue,
+      totalSupportClicks,
       desktopUsersCount: desktopCount,
       webUsersCount: webCount,
       users,

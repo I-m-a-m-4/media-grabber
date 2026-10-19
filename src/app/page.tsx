@@ -8,7 +8,7 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import Link from "next/link";
 import JSZip from "jszip";
 import { useFlutterwave, closePaymentModal } from "flutterwave-react-v3";
-import { initAnonymousUser, recordPaymentTransaction, recordDownloadActivity, auth } from "../lib/firebase";
+import { initAnonymousUser, recordPaymentTransaction, recordDownloadActivity, recordHeartbeat, recordSupportClick, auth } from "../lib/firebase";
 
 interface SecurityReport {
   is_safe: boolean;
@@ -589,7 +589,23 @@ export default function App() {
 
   // Load Firebase Auth, Theme, Logo & History on mount
   useEffect(() => {
-    initAnonymousUser();
+    initAnonymousUser().then((u) => {
+      if (u) recordHeartbeat(u.uid);
+    });
+
+    // Realtime presence heartbeat (every 50s while tab is visible)
+    const heartbeatInterval = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        recordHeartbeat();
+      }
+    }, 50000);
+
+    const onVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        recordHeartbeat();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     const savedTheme = localStorage.getItem("mediaGrabberTheme") as "dark" | "light" | null;
     if (savedTheme) {
@@ -613,6 +629,11 @@ export default function App() {
       }
     }
     inputRef.current?.focus();
+
+    return () => {
+      clearInterval(heartbeatInterval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, []);
 
   function handleLogoChange(newLogo: LogoVariant) {
@@ -1127,7 +1148,10 @@ export default function App() {
           <div className="top-actions-group">
             <button
               className="support-btn"
-              onClick={() => setShowSupportModal(true)}
+              onClick={() => {
+                setShowSupportModal(true);
+                recordSupportClick();
+              }}
               title="Support Universal Media Grabber"
             >
               <HeartIcon /> Support Us

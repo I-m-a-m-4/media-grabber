@@ -4,10 +4,10 @@
   "version": "0.2.2",
   "type": "module",
   "scripts": {
-    "dev": "next dev --port 1421",
-    "build": "next build",
+    "dev": "node api.js && next dev --port 1421",
+    "build": "node api.js && next build",
     "build:tauri": "cross-env NEXT_PUBLIC_TAURI=1 next build",
-    "start": "next start",
+    "start": "node api.js && next start",
     "tauri": "tauri"
   },
   "dependencies": {

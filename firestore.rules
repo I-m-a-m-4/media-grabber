@@ -1,14 +1,21 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Users collection: allow desktop and web clients to register and record stats
+    // Admin verification helper
+    function isAdmin() {
+      return request.auth != null && request.auth.token.email == 'belloimam431@gmail.com';
+    }
+
+    // Users collection: desktop and web clients can register presence and heartbeats
     match /users/{userId} {
-      allow read, write: if true;
+      allow create, update: if true;
+      allow read: if true; // Gated in Admin dashboard to belloimam431@gmail.com
     }
     
     // Downloads activity log
     match /downloads/{downloadId} {
-      allow read, write: if true;
+      allow create: if true;
+      allow read: if true;
     }
 
     // Analytics summary counters
@@ -18,7 +25,14 @@ service cloud.firestore {
 
     // Payments collection
     match /payments/{paymentId} {
-      allow read, write: if true;
+      allow create: if true;
+      allow read: if true;
+    }
+
+    // Support button clicks tracking
+    match /support_clicks/{clickId} {
+      allow create: if true;
+      allow read: if true;
     }
   }
 }
