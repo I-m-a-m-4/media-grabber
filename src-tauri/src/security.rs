@@ -85,8 +85,8 @@ pub fn vet_url(raw_url: &str) -> SecurityReport {
     ];
 
     let safe_media_exts = [
-        "mp4", "webm", "mkv", "avi", "mov", "mp3", "m4a", "aac", "flac", "wav", "jpg", "jpeg",
-        "png", "webp", "gif", "svg", "pdf", "heic", "bmp", "tiff",
+        "mp4", "webm", "mkv", "avi", "mov", "m4v", "ts", "m3u8", "mpd", "mp3", "m4a", "aac", "flac",
+        "wav", "ogg", "opus", "jpg", "jpeg", "png", "webp", "gif", "svg", "pdf", "heic", "bmp", "tiff",
     ];
 
     let mut risk_level = "safe".to_string();
@@ -102,6 +102,22 @@ pub fn vet_url(raw_url: &str) -> SecurityReport {
         || host_str.contains("vimeo.com")
         || host_str.contains("facebook.com")
         || host_str.contains("twitch.tv")
+        || host_str.contains("dailymotion.com")
+        || host_str.contains("reddit.com")
+        || host_str.contains("v.redd.it")
+        || host_str.contains("soundcloud.com")
+        || host_str.contains("bandcamp.com")
+        || host_str.contains("rumble.com")
+        || host_str.contains("streamable.com")
+        || host_str.contains("pinterest.com")
+        || host_str.contains("bilibili.com")
+        || host_str.contains("mixcloud.com")
+        || host_str.contains("audiomack.com")
+        || host_str.contains("threads.net")
+        || host_str.contains("linkedin.com")
+        || host_str.contains("tumblr.com")
+        || host_str.contains("vk.com")
+        || host_str.contains("loom.com")
     {
         category = "media_stream".to_string();
     } else if host_str.contains("apps.apple.com")

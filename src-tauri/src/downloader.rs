@@ -1026,6 +1026,92 @@ async fn fetch_app_store_info(
     })
 }
 
+fn resolve_web_url(base: &Option<url::Url>, candidate: &str) -> String {
+    let trimmed = candidate.trim();
+    if trimmed.starts_with("//") {
+        return format!("https:{}", trimmed);
+    }
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return trimmed.to_string();
+    }
+    if let Some(ref b) = base {
+        if let Ok(joined) = b.join(trimmed) {
+            return joined.to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn add_video_stream_item(
+    raw_url: &str,
+    note: &str,
+    resolution: &str,
+    base: &Option<url::Url>,
+    formats_list: &mut Vec<FormatInfo>,
+    seen_urls: &mut std::collections::HashSet<String>,
+) {
+    let full_url = resolve_web_url(base, raw_url);
+    if full_url.is_empty() || seen_urls.contains(&full_url) {
+        return;
+    }
+    seen_urls.insert(full_url.clone());
+    let idx = formats_list.len() + 1;
+    let is_m3u8 = full_url.contains(".m3u8");
+
+    formats_list.push(FormatInfo {
+        format_id: format!("web_vid_{}", idx),
+        ext: "mp4".to_string(),
+        resolution: if is_m3u8 { "HLS Adaptive HD".to_string() } else { resolution.to_string() },
+        fps: Some(30.0),
+        vcodec: "h264".to_string(),
+        acodec: "aac".to_string(),
+        filesize: None,
+        note: Some(note.to_string()),
+        direct_url: Some(full_url.clone()),
+        asset_type: "video".to_string(),
+    });
+
+    formats_list.push(FormatInfo {
+        format_id: format!("web_audio_{}", idx),
+        ext: "mp3".to_string(),
+        resolution: "Audio Only (MP3 Track)".to_string(),
+        fps: None,
+        vcodec: "none".to_string(),
+        acodec: "mp3".to_string(),
+        filesize: None,
+        note: Some(format!("Extracted Audio ({})", note)),
+        direct_url: Some(full_url),
+        asset_type: "audio".to_string(),
+    });
+}
+
+fn add_audio_stream_item(
+    raw_url: &str,
+    note: &str,
+    base: &Option<url::Url>,
+    formats_list: &mut Vec<FormatInfo>,
+    seen_urls: &mut std::collections::HashSet<String>,
+) {
+    let full_url = resolve_web_url(base, raw_url);
+    if full_url.is_empty() || seen_urls.contains(&full_url) {
+        return;
+    }
+    seen_urls.insert(full_url.clone());
+    let idx = formats_list.len() + 1;
+    formats_list.push(FormatInfo {
+        format_id: format!("web_audio_stream_{}", idx),
+        ext: "mp3".to_string(),
+        resolution: "Audio Track (MP3)".to_string(),
+        fps: None,
+        vcodec: "none".to_string(),
+        acodec: "mp3".to_string(),
+        filesize: None,
+        note: Some(note.to_string()),
+        direct_url: Some(full_url),
+        asset_type: "audio".to_string(),
+    });
+}
+
 async fn fetch_generic_web_info(
     url: &str,
     security_report: &SecurityReport,
@@ -1136,7 +1222,7 @@ async fn fetch_generic_web_info(
 
     // Extract Hero / Og Image
     let og_img_re = Regex::new(r#"(?i)<meta\s+property="og:image"\s+content="([^"]+)"#).unwrap();
-    let thumbnail = og_img_re
+    let mut thumbnail = og_img_re
         .captures(&html)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_string());
@@ -1161,15 +1247,133 @@ async fn fetch_generic_web_info(
         });
     }
 
-    // Scrape embedded <img> & <video> tags
-    let img_src_re = Regex::new(r#"(?i)<img[^>]+src=["'](https?://[^"'\s]+)["']"#).unwrap();
-    let video_src_re = Regex::new(r#"(?i)<video[^>]+src=["'](https?://[^"'\s]+)["']"#).unwrap();
+    let parsed_base = url::Url::parse(url).ok();
 
+    // 1. OpenGraph & Twitter Card Video Sniffer
+    let og_vid_re = Regex::new(r#"(?i)<meta\s+(?:property|name)=["']og:video(?::url|:secure_url)?["']\s+content=["']([^"']+)["']"#).unwrap();
+    let og_vid_rev_re = Regex::new(r#"(?i)<meta\s+content=["']([^"']+)["']\s+(?:property|name)=["']og:video(?::url|:secure_url)?["']"#).unwrap();
+    let tw_vid_re = Regex::new(r#"(?i)<meta\s+(?:property|name)=["']twitter:player:stream["']\s+content=["']([^"']+)["']"#).unwrap();
+    let og_aud_re = Regex::new(r#"(?i)<meta\s+(?:property|name)=["']og:audio(?::url|:secure_url)?["']\s+content=["']([^"']+)["']"#).unwrap();
+
+    for cap in og_vid_re.captures_iter(&html) {
+        if let Some(m) = cap.get(1) {
+            add_video_stream_item(m.as_str(), "OpenGraph Video Stream", "Original HD", &parsed_base, &mut formats_list, &mut seen_urls);
+        }
+    }
+    for cap in og_vid_rev_re.captures_iter(&html) {
+        if let Some(m) = cap.get(1) {
+            add_video_stream_item(m.as_str(), "OpenGraph Video Stream", "Original HD", &parsed_base, &mut formats_list, &mut seen_urls);
+        }
+    }
+    for cap in tw_vid_re.captures_iter(&html) {
+        if let Some(m) = cap.get(1) {
+            add_video_stream_item(m.as_str(), "Twitter Player Stream", "Original HD", &parsed_base, &mut formats_list, &mut seen_urls);
+        }
+    }
+    for cap in og_aud_re.captures_iter(&html) {
+        if let Some(m) = cap.get(1) {
+            add_audio_stream_item(m.as_str(), "OpenGraph Audio Stream", &parsed_base, &mut formats_list, &mut seen_urls);
+        }
+    }
+
+    // 2. HTML5 <video> & <source> tags
+    let video_src_re = Regex::new(r#"(?i)<video[^>]+src=["']([^"'\s]+)["']"#).unwrap();
+    for cap in video_src_re.captures_iter(&html) {
+        if let Some(v_match) = cap.get(1) {
+            add_video_stream_item(v_match.as_str(), "HTML5 Embedded Video", "Standard HD", &parsed_base, &mut formats_list, &mut seen_urls);
+        }
+    }
+
+    let source_src_re = Regex::new(r#"(?i)<source[^>]+src=["']([^"'\s]+)["']"#).unwrap();
+    for cap in source_src_re.captures_iter(&html) {
+        if let Some(s_match) = cap.get(1) {
+            let s_url = s_match.as_str();
+            if s_url.contains(".mp4") || s_url.contains(".webm") || s_url.contains(".m3u8") || s_url.contains(".mov") {
+                add_video_stream_item(s_url, "HTML5 Source Stream", "Standard HD", &parsed_base, &mut formats_list, &mut seen_urls);
+            } else if s_url.contains(".mp3") || s_url.contains(".m4a") || s_url.contains(".wav") || s_url.contains(".aac") {
+                add_audio_stream_item(s_url, "HTML5 Audio Source", &parsed_base, &mut formats_list, &mut seen_urls);
+            }
+        }
+    }
+
+    // 3. HTML5 <audio> tags
+    let audio_src_re = Regex::new(r#"(?i)<audio[^>]+src=["']([^"'\s]+)["']"#).unwrap();
+    for cap in audio_src_re.captures_iter(&html) {
+        if let Some(a_match) = cap.get(1) {
+            add_audio_stream_item(a_match.as_str(), "HTML5 Audio Track", &parsed_base, &mut formats_list, &mut seen_urls);
+        }
+    }
+
+    // 4. Recursive Iframe Embed Resolver (YouTube, Vimeo, etc.)
+    let iframe_re = Regex::new(r#"(?i)<iframe[^>]+src=["']([^"'\s]+)["']"#).unwrap();
+    let yt_embed_re = Regex::new(r#"(?i)(?:youtube(?:-nocookie)?\.com/embed/|youtu\.be/)([a-zA-Z0-9_-]{11})"#).unwrap();
+
+    for cap in iframe_re.captures_iter(&html) {
+        if let Some(iframe_match) = cap.get(1) {
+            let iframe_url = resolve_web_url(&parsed_base, iframe_match.as_str());
+            if let Some(yt_cap) = yt_embed_re.captures(&iframe_url) {
+                if let Some(vid_id) = yt_cap.get(1) {
+                    let yt_canonical = format!("https://www.youtube.com/watch?v={}", vid_id.as_str());
+                    if let Ok(yt_info) = fetch_youtube_fallback_info(&yt_canonical, security_report).await {
+                        for mut f in yt_info.formats {
+                            f.note = Some(format!("Embedded YouTube ({})", f.note.unwrap_or_else(|| f.resolution.clone())));
+                            formats_list.push(f);
+                        }
+                        for img in yt_info.images {
+                            images_list.push(img);
+                        }
+                        if thumbnail.is_none() {
+                            thumbnail = yt_info.thumbnail;
+                        }
+                    }
+                }
+            } else if iframe_url.contains("vimeo.com") {
+                add_video_stream_item(&iframe_url, "Embedded Vimeo Player", "Vimeo Stream", &parsed_base, &mut formats_list, &mut seen_urls);
+            }
+        }
+    }
+
+    // 5. In-Page Streaming Manifests & Direct MP4s in <script> and HTML
+    let stream_manifest_re = Regex::new(r#"(?i)https?://[^\s"'<>\\]+?\.(m3u8|mp4|webm)(?:\?[^\s"'<>\\]*)?"#).unwrap();
+    let mut manifest_count = 0;
+    for cap in stream_manifest_re.captures_iter(&html) {
+        if let Some(m) = cap.get(0) {
+            let raw_s = m.as_str();
+            if !raw_s.contains("doubleclick")
+                && !raw_s.contains("analytics")
+                && !raw_s.contains("facebook")
+                && !raw_s.contains("googlesyndication")
+                && !raw_s.contains("adservice")
+            {
+                manifest_count += 1;
+                let is_m3u8 = raw_s.contains(".m3u8");
+                add_video_stream_item(
+                    raw_s,
+                    if is_m3u8 { "HLS Streaming Manifest" } else { "Direct Video Asset" },
+                    if is_m3u8 { "HLS Adaptive HD" } else { "Original Stream" },
+                    &parsed_base,
+                    &mut formats_list,
+                    &mut seen_urls,
+                );
+                if manifest_count >= 8 {
+                    break;
+                }
+            }
+        }
+    }
+
+    // 6. Scrape embedded <img> tags
+    let img_src_re = Regex::new(r#"(?i)<img[^>]+src=["']([^"'\s]+)["']"#).unwrap();
     let mut img_idx = 1;
     for cap in img_src_re.captures_iter(&html) {
         if let Some(img_match) = cap.get(1) {
-            let img_url = img_match.as_str().to_string();
-            if !seen_urls.contains(&img_url) && !img_url.ends_with(".svg") && !img_url.contains("data:image") {
+            let img_raw = img_match.as_str();
+            let img_url = resolve_web_url(&parsed_base, img_raw);
+            if !seen_urls.contains(&img_url)
+                && !img_url.ends_with(".svg")
+                && !img_url.contains("data:image")
+                && img_url.len() > 10
+            {
                 seen_urls.insert(img_url.clone());
                 images_list.push(FormatInfo {
                     format_id: format!("page_img_{}", img_idx),
@@ -1191,27 +1395,9 @@ async fn fetch_generic_web_info(
         }
     }
 
-    let mut video_idx = 1;
-    for cap in video_src_re.captures_iter(&html) {
-        if let Some(v_match) = cap.get(1) {
-            let v_url = v_match.as_str().to_string();
-            if !seen_urls.contains(&v_url) {
-                seen_urls.insert(v_url.clone());
-                formats_list.push(FormatInfo {
-                    format_id: format!("embedded_video_{}", video_idx),
-                    ext: "mp4".to_string(),
-                    resolution: "Embedded Video".to_string(),
-                    fps: None,
-                    vcodec: "h264".to_string(),
-                    acodec: "aac".to_string(),
-                    filesize: None,
-                    note: Some(format!("Embedded Media {}", video_idx)),
-                    direct_url: Some(v_url),
-                    asset_type: "video".to_string(),
-                });
-                video_idx += 1;
-            }
-        }
+    let mut final_security = security_report.clone();
+    if !formats_list.is_empty() {
+        final_security.category = "media_stream".to_string();
     }
 
     Ok(MediaInfo {
@@ -1220,10 +1406,14 @@ async fn fetch_generic_web_info(
         thumbnail: thumbnail.clone(),
         duration: None,
         uploader: Some(security_report.domain.clone()),
-        site_name: Some("Web Media Extractor".to_string()),
+        site_name: if !formats_list.is_empty() {
+            Some(format!("{} Media Source", security_report.domain))
+        } else {
+            Some("Web Media Extractor".to_string())
+        },
         formats: formats_list,
         images: images_list,
-        security: security_report.clone(),
+        security: final_security,
     })
 }
 
@@ -1243,6 +1433,41 @@ pub async fn download_media(
     // If direct_url is provided (for App Store screenshots, images, direct file downloads)
     if let Some(d_url) = direct_url {
         if !d_url.trim().is_empty() {
+            let is_hls = d_url.contains(".m3u8");
+            let is_extract_audio = audio_only
+                || format_id
+                    .as_deref()
+                    .map_or(false, |f| f.ends_with("_audio") || f == "yt_audio");
+
+            if is_hls || (is_extract_audio && (d_url.contains(".mp4") || d_url.contains(".webm") || is_hls)) {
+                let output_template = format!("{}/%(title)s.%(ext)s", download_dir);
+                let mut args = vec![d_url, "-o".to_string(), output_template];
+                if is_extract_audio {
+                    args.push("-x".to_string());
+                    args.push("--audio-format".to_string());
+                    args.push("mp3".to_string());
+                }
+                let sidecar_command = app_handle
+                    .shell()
+                    .sidecar("yt-dlp")
+                    .map_err(|e| format!("Failed to create sidecar command: {}", e))?
+                    .args(args);
+
+                let output = sidecar_command
+                    .output()
+                    .await
+                    .map_err(|e| format!("Failed to execute yt-dlp: {}", e))?;
+
+                if !output.status.success() {
+                    return Err(format!(
+                        "yt-dlp stream extraction failed: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    ));
+                }
+
+                return Ok("Download complete! Stream saved to your Downloads folder.".to_string());
+            }
+
             return download_direct_file(&d_url, &download_dir).await;
         }
     }
@@ -1257,7 +1482,12 @@ pub async fn download_media(
         args.push("--audio-format".to_string());
         args.push("mp3".to_string());
     } else if let Some(ref fid) = format_id {
-        if fid != "direct_file" && !fid.starts_with("app_") && !fid.starts_with("page_") {
+        if fid != "direct_file"
+            && !fid.starts_with("app_")
+            && !fid.starts_with("page_")
+            && !fid.starts_with("web_")
+            && !fid.starts_with("embedded_")
+        {
             args.push("-f".to_string());
             match fid.as_str() {
                 "yt_best" => args.push("bv*+ba/b".to_string()),
