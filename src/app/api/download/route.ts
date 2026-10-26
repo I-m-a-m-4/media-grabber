@@ -121,22 +121,18 @@ async function handleDownloadRequest(
       !actualDirectUrl.includes('googlevideo.com')
     );
 
-    const isYtStream =
-      pageUrl.includes('youtube.com') ||
-      pageUrl.includes('youtu.be') ||
-      pageUrl.includes('tiktok.com') ||
-      pageUrl.includes('vimeo.com') ||
-      pageUrl.includes('twitter.com') ||
-      pageUrl.includes('x.com') ||
-      pageUrl.includes('facebook.com') ||
-      (!isDirectAvailable && pageUrl.includes('instagram.com'));
-
+    const isM3u8 = actualDirectUrl.includes('.m3u8') || targetUrl.includes('.m3u8');
     const isAudio = audioOnly || formatId === 'audio_best' || formatId?.includes('audio') || formatId?.includes('mp3');
 
-    // 1. YouTube/Video stream download via yt-dlp temp file stream
-    // Only invoke yt-dlp when no directUrl is available or when directUrl is a protected googlevideo stream
-    if (isYtStream && !isDirectAvailable) {
-      const ytResult = await downloadWithYtDlp(pageUrl, formatId, isAudio);
+    // 1. If target is an HLS .m3u8 stream, or no direct file is available, or yt-dlp format was chosen:
+    const isYtDlpTarget =
+      isM3u8 ||
+      !isDirectAvailable ||
+      (isAudio && (actualDirectUrl.includes('.mp4') || actualDirectUrl.includes('.webm')));
+
+    if (isYtDlpTarget) {
+      const ytTargetUrl = isM3u8 && actualDirectUrl ? actualDirectUrl : (actualDirectUrl || pageUrl);
+      const ytResult = await downloadWithYtDlp(ytTargetUrl, formatId, isAudio);
       if (ytResult && ytResult.buffer.length > 0) {
         const ext = ytResult.ext || (isAudio ? 'mp3' : 'mp4');
         let safeFilename = customFilename || `media_${Date.now()}.${ext}`;
@@ -157,14 +153,15 @@ async function handleDownloadRequest(
         });
       }
 
-      // If serverless yt-dlp failed or was blocked on this host, do NOT fall through to fetching HTML web page
-      return NextResponse.json(
-        {
-          error:
-            'Video stream could not be downloaded via the web server proxy. For direct downloads without cloud rate-limits, please use the Media Grabber Desktop App.',
-        },
-        { status: 503 }
-      );
+      if (!isDirectAvailable) {
+        return NextResponse.json(
+          {
+            error:
+              'Video stream could not be downloaded via the web server proxy. For direct downloads without cloud rate-limits, please use the Media Grabber Desktop App.',
+          },
+          { status: 503 }
+        );
+      }
     }
 
     // 2. Standard direct media asset / stream proxy fetch

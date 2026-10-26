@@ -2136,7 +2136,7 @@ dependencies = [
 
 [[package]]
 name = "media-grabber"
-version = "0.2.1"
+version = "0.2.3"
 dependencies = [
  "dirs 7.0.0",
  "regex",

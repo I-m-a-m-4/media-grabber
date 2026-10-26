@@ -1103,9 +1103,73 @@ export async function GET(request: Request) {
       file_extension: null,
     };
 
+    // Direct media file link detection (e.g. .mp4, .webm, .mkv, .mov, .mp3, .m4a, .wav)
+    const pathname = targetUrlObj.pathname.toLowerCase();
+    const directExtMatch = pathname.match(/\.(mp4|webm|mkv|mov|avi|m4v|mp3|m4a|wav|aac|flac|ogg)$/i);
+    if (directExtMatch) {
+      const ext = directExtMatch[1].toLowerCase();
+      const isVideo = ['mp4', 'webm', 'mkv', 'mov', 'avi', 'm4v'].includes(ext);
+      const isAudio = ['mp3', 'm4a', 'wav', 'aac', 'flac', 'ogg'].includes(ext);
+      const pathSegments = targetUrlObj.pathname.split('/').filter(Boolean);
+      const rawName = pathSegments.length > 0 ? pathSegments[pathSegments.length - 1] : 'Direct Media';
+      const cleanTitle = decodeURIComponent(rawName);
+
+      const directFormats = [
+        {
+          format_id: 'direct_file',
+          ext,
+          resolution: isVideo ? 'Original High Definition Stream' : 'Original Audio Track',
+          fps: isVideo ? 30 : null,
+          vcodec: isVideo ? 'h264' : 'none',
+          acodec: isVideo ? 'aac' : ext,
+          direct_url: url,
+          asset_type: isVideo ? 'video' : (isAudio ? 'audio' : 'video'),
+          note: isVideo ? 'Original Direct Video Stream' : 'Original Direct Audio Stream',
+        },
+      ];
+
+      if (isVideo) {
+        directFormats.push({
+          format_id: 'audio_direct_extract',
+          ext: 'mp3',
+          resolution: 'Audio Only (Extract MP3)',
+          fps: null,
+          vcodec: 'none',
+          acodec: 'mp3',
+          direct_url: `/api/download?url=${encodeURIComponent(url)}&directUrl=${encodeURIComponent(url)}&audioOnly=true`,
+          asset_type: 'audio',
+          note: 'Extracted MP3 Audio Track',
+        });
+      }
+
+      return NextResponse.json(
+        sanitizeMediaInfo(
+          {
+            title: cleanTitle,
+            description: `Direct media stream file hosted on ${domain}`,
+            extracted_text: `Direct media file: ${url}`,
+            thumbnail: undefined,
+            duration: null,
+            uploader: domain,
+            site_name: 'Direct Media Source',
+            formats: directFormats,
+            images: [],
+            security: {
+              ...security,
+              category: 'direct_media',
+              file_extension: ext,
+            },
+          },
+          url
+        )
+      );
+    }
+
     let extractedText = '';
     const images: any[] = [];
     const seenUrls = new Set<string>();
+    const formats: any[] = [];
+    const seenMediaUrls = new Set<string>();
 
     const addImage = (rawImgUrl: string, note: string) => {
       if (!rawImgUrl || rawImgUrl.startsWith('data:')) return;
@@ -1138,6 +1202,45 @@ export async function GET(request: Request) {
       });
     };
 
+    const addMediaFormat = (rawMediaUrl: string, assetType: 'video' | 'audio', note: string, resolution = 'Original Stream') => {
+      if (!rawMediaUrl || rawMediaUrl.startsWith('data:') || rawMediaUrl.startsWith('blob:')) return;
+      const absUrl = rawMediaUrl.startsWith('//') ? `https:${rawMediaUrl}` : makeAbsoluteUrl(rawMediaUrl, url);
+      if (seenMediaUrls.has(absUrl)) return;
+      seenMediaUrls.add(absUrl);
+
+      const extMatch = absUrl.match(/\.(mp4|webm|mkv|mov|avi|m4v|m3u8|mpd|mp3|m4a|wav|aac|flac|ogg)/i);
+      let ext = extMatch ? extMatch[1].toLowerCase() : (assetType === 'video' ? 'mp4' : 'mp3');
+      const isM3u8 = ext === 'm3u8';
+      const formatId = `${assetType}_${formats.length + 1}`;
+
+      formats.push({
+        format_id: formatId,
+        ext: isM3u8 ? 'mp4' : ext,
+        resolution: isM3u8 ? 'HLS Adaptive Video Stream' : resolution,
+        fps: assetType === 'video' ? 30 : null,
+        vcodec: assetType === 'video' ? 'h264' : 'none',
+        acodec: 'aac',
+        direct_url: absUrl,
+        asset_type: assetType,
+        note,
+      });
+
+      // If video, also automatically offer an audio extraction format (MP3)
+      if (assetType === 'video') {
+        formats.push({
+          format_id: `${formatId}_audio`,
+          ext: 'mp3',
+          resolution: 'Audio Only (Extract MP3)',
+          fps: null,
+          vcodec: 'none',
+          acodec: 'mp3',
+          direct_url: `/api/download?url=${encodeURIComponent(url)}&directUrl=${encodeURIComponent(absUrl)}&audioOnly=true`,
+          asset_type: 'audio',
+          note: `Extracted Audio Track (${note})`,
+        });
+      }
+    };
+
     let title = `${domain} Asset`;
     let description = '';
     let primaryThumbnail: string | undefined = undefined;
@@ -1157,7 +1260,23 @@ export async function GET(request: Request) {
       domain.includes('vimeo.com') ||
       domain.includes('twitch.tv') ||
       domain.includes('facebook.com') ||
-      domain.includes('dailymotion.com');
+      domain.includes('dailymotion.com') ||
+      domain.includes('reddit.com') ||
+      domain.includes('v.redd.it') ||
+      domain.includes('soundcloud.com') ||
+      domain.includes('bandcamp.com') ||
+      domain.includes('rumble.com') ||
+      domain.includes('streamable.com') ||
+      domain.includes('pinterest.com') ||
+      domain.includes('pin.it') ||
+      domain.includes('bilibili.com') ||
+      domain.includes('mixcloud.com') ||
+      domain.includes('audiomack.com') ||
+      domain.includes('threads.net') ||
+      domain.includes('linkedin.com') ||
+      domain.includes('tumblr.com') ||
+      domain.includes('vk.com') ||
+      domain.includes('loom.com');
 
     // Dedicated Twitter / X Fast Resolver (Run first to extract high-res direct streams without yt-dlp timeout)
     if (domain.includes('twitter.com') || domain.includes('x.com') || url.includes('twitter.com') || url.includes('x.com')) {
@@ -1458,7 +1577,130 @@ export async function GET(request: Request) {
 
         if (ogImage && !primaryThumbnail) primaryThumbnail = makeAbsoluteUrl(ogImage, url);
 
-        // 3. Extract <img> and <source> tag candidates across any website
+        // 3. Extract OpenGraph & Twitter Player Video Streams
+        const ogVideo = (
+          html.match(/<meta\s+(?:property|name)="og:video(?::url|:secure_url)?"\s+content="([^"]+)"/i)?.[1] ||
+          html.match(/<meta\s+content="([^"]+)"\s+(?:property|name)="og:video(?::url|:secure_url)?"/i)?.[1]
+        );
+        if (ogVideo) addMediaFormat(ogVideo, 'video', 'OpenGraph Video Stream', 'HD Video');
+
+        const twitterVideo = (
+          html.match(/<meta\s+(?:property|name)="twitter:player:stream"\s+content="([^"]+)"/i)?.[1] ||
+          html.match(/<meta\s+content="([^"]+)"\s+(?:property|name)="twitter:player:stream"/i)?.[1]
+        );
+        if (twitterVideo) addMediaFormat(twitterVideo, 'video', 'Twitter Card Stream', 'HD Video');
+
+        const ogAudio = (
+          html.match(/<meta\s+(?:property|name)="og:audio(?::url|:secure_url)?"\s+content="([^"]+)"/i)?.[1] ||
+          html.match(/<meta\s+content="([^"]+)"\s+(?:property|name)="og:audio(?::url|:secure_url)?"/i)?.[1]
+        );
+        if (ogAudio) addMediaFormat(ogAudio, 'audio', 'OpenGraph Audio Track', 'Audio Stream');
+
+        // 4. Extract HTML5 <video> & <audio> direct tags
+        const videoTagRegex = /<video[^>]*\ssrc=["']([^"']+)["'][^>]*>/gi;
+        let vMatch;
+        while ((vMatch = videoTagRegex.exec(html)) !== null) {
+          addMediaFormat(vMatch[1], 'video', `Embedded Video ${formats.length + 1}`, 'Standard HD');
+        }
+
+        const videoSourceRegex = /<video[\s\S]*?>([\s\S]*?)<\/video>/gi;
+        let vsBlockMatch;
+        while ((vsBlockMatch = videoSourceRegex.exec(html)) !== null) {
+          const innerHtml = vsBlockMatch[1];
+          const srcRegex = /<source[^>]*\ssrc=["']([^"']+)["'][^>]*>/gi;
+          let sMatch;
+          while ((sMatch = srcRegex.exec(innerHtml)) !== null) {
+            addMediaFormat(sMatch[1], 'video', `HTML5 Video Stream`, 'Standard HD');
+          }
+        }
+
+        const audioTagRegex = /<audio[^>]*\ssrc=["']([^"']+)["'][^>]*>/gi;
+        let aMatch;
+        while ((aMatch = audioTagRegex.exec(html)) !== null) {
+          addMediaFormat(aMatch[1], 'audio', `Embedded Audio Track`, 'Audio Stream');
+        }
+
+        const audioSourceRegex = /<audio[\s\S]*?>([\s\S]*?)<\/audio>/gi;
+        let asBlockMatch;
+        while ((asBlockMatch = audioSourceRegex.exec(html)) !== null) {
+          const innerHtml = asBlockMatch[1];
+          const srcRegex = /<source[^>]*\ssrc=["']([^"']+)["'][^>]*>/gi;
+          let sMatch;
+          while ((sMatch = srcRegex.exec(innerHtml)) !== null) {
+            addMediaFormat(sMatch[1], 'audio', `HTML5 Audio Track`, 'Audio Stream');
+          }
+        }
+
+        // 5. Recursive Embedded Iframe Sniffer (YouTube, Vimeo, etc.)
+        const iframeRegex = /<iframe[^>]*\ssrc=["']([^"']+)["'][^>]*>/gi;
+        let ifMatch;
+        const foundIframeUrls: string[] = [];
+        while ((ifMatch = iframeRegex.exec(html)) !== null && foundIframeUrls.length < 5) {
+          const rawIframeSrc = ifMatch[1];
+          const iframeSrc = rawIframeSrc.startsWith('//') ? `https:${rawIframeSrc}` : makeAbsoluteUrl(rawIframeSrc, url);
+          if (iframeSrc && !foundIframeUrls.includes(iframeSrc)) {
+            foundIframeUrls.push(iframeSrc);
+          }
+        }
+
+        for (const iframeUrl of foundIframeUrls) {
+          const ytMatch = iframeUrl.match(/(?:youtube(?:-nocookie)?\.com\/embed\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/i);
+          if (ytMatch && ytMatch[1]) {
+            const ytFallback = await getYouTubeFallbackInfo(`https://www.youtube.com/watch?v=${ytMatch[1]}`);
+            if (ytFallback && ytFallback.formats) {
+              if (!title || title === `${domain} Asset`) title = ytFallback.title;
+              if (!primaryThumbnail && ytFallback.thumbnail) primaryThumbnail = ytFallback.thumbnail;
+              ytFallback.formats.forEach((f: any) => {
+                formats.push({
+                  ...f,
+                  note: `Embedded YouTube: ${f.note || f.resolution}`,
+                });
+              });
+              if (ytFallback.images) {
+                ytFallback.images.forEach((img: any) => images.push(img));
+              }
+            }
+          } else if (iframeUrl.includes('vimeo.com')) {
+            formats.push({
+              format_id: `vimeo_embed_${formats.length + 1}`,
+              ext: 'mp4',
+              resolution: 'Vimeo Embedded Video',
+              fps: 30,
+              vcodec: 'h264',
+              acodec: 'aac',
+              direct_url: iframeUrl,
+              asset_type: 'video',
+              note: 'Embedded Vimeo Video',
+            });
+          }
+        }
+
+        // 6. Deep Scan for .m3u8 HLS playlists & .mp4 links in <script> blocks or HTML
+        const streamRegex = /https?:\/\/[^\s"'<>\\]+?\.(m3u8|mp4|webm)(?:\?[^\s"'<>\\]*)?/gi;
+        let smMatch;
+        let streamCount = 0;
+        while ((smMatch = streamRegex.exec(html)) !== null && streamCount < 10) {
+          const streamUrl = smMatch[0];
+          if (
+            !streamUrl.includes('google') &&
+            !streamUrl.includes('analytics') &&
+            !streamUrl.includes('doubleclick') &&
+            !streamUrl.includes('facebook') &&
+            !streamUrl.includes('segment') &&
+            !streamUrl.includes('stats')
+          ) {
+            streamCount++;
+            const isM3u8 = streamUrl.toLowerCase().includes('.m3u8');
+            addMediaFormat(
+              streamUrl,
+              'video',
+              isM3u8 ? 'HLS Streaming Manifest' : 'Direct Video Stream',
+              isM3u8 ? 'HLS Adaptive HD' : 'Original Video'
+            );
+          }
+        }
+
+        // 7. Extract <img> tag candidates across any website
         const imgTagRegex = /<(?:img|source)\s+[^>]*?(?:src|data-src|srcset|data-srcset|data-original|data-highres|data-zoom-image|data-full-src)=["']([^"'\s]+)["'][^>]*>/gi;
         let match;
         let count = 0;
@@ -1483,7 +1725,7 @@ export async function GET(request: Request) {
           }
         }
 
-        // 4. Extract paragraph text content for Overview tab
+        // 8. Extract paragraph text content for Overview tab
         const paragraphs: string[] = [];
         const pRegex = /<p[^>]*>([\s\S]*?)<\/p>/gi;
         let pMatch;
@@ -1521,6 +1763,10 @@ export async function GET(request: Request) {
       }
     }
 
+    if (formats.length > 0) {
+      security.category = 'media_stream';
+    }
+
     return NextResponse.json(
       sanitizeMediaInfo(
         {
@@ -1530,8 +1776,8 @@ export async function GET(request: Request) {
           thumbnail: primaryThumbnail,
           duration: null,
           uploader,
-          site_name,
-          formats: [],
+          site_name: formats.length > 0 ? (site_name || `${domain} Media`) : site_name,
+          formats,
           images,
           security,
         },
