@@ -62,20 +62,69 @@ jobs:
       - name: Install npm dependencies
         run: npm install
 
-      - name: Download Target Sidecar Binaries (yt-dlp)
+      - name: Download Target Sidecar Binaries (yt-dlp, ffmpeg, deno) - Unix
+        if: matrix.platform != 'windows-latest'
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p src-tauri/bin
+
           if [ "${{ matrix.platform }}" = "macos-latest" ]; then
-            curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos -o src-tauri/bin/yt-dlp-aarch64-apple-darwin
-            curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos -o src-tauri/bin/yt-dlp-x86_64-apple-darwin
-            chmod +x src-tauri/bin/yt-dlp-aarch64-apple-darwin src-tauri/bin/yt-dlp-x86_64-apple-darwin
-          elif [ "${{ matrix.platform }}" = "ubuntu-22.04" ]; then
-            curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o src-tauri/bin/yt-dlp-x86_64-unknown-linux-gnu
-            chmod +x src-tauri/bin/yt-dlp-x86_64-unknown-linux-gnu
-          elif [ "${{ matrix.platform }}" = "windows-latest" ]; then
-            curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe -o src-tauri/bin/yt-dlp-x86_64-pc-windows-msvc.exe
+            curl -L --retry 3 --retry-delay 5 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos -o src-tauri/bin/yt-dlp-aarch64-apple-darwin
+            curl -L --retry 3 --retry-delay 5 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos -o src-tauri/bin/yt-dlp-x86_64-apple-darwin
+
+            # deno: JavaScript runtime used by yt-dlp to solve YouTube EJS challenges
+            curl -L --retry 3 --retry-delay 5 https://github.com/denoland/deno/releases/latest/download/deno-aarch64-apple-darwin.zip -o /tmp/deno-arm.zip
+            curl -L --retry 3 --retry-delay 5 https://github.com/denoland/deno/releases/latest/download/deno-x86_64-apple-darwin.zip -o /tmp/deno-x64.zip
+            unzip -o /tmp/deno-arm.zip -d /tmp/deno-arm
+            unzip -o /tmp/deno-x64.zip -d /tmp/deno-x64
+            cp /tmp/deno-arm/deno src-tauri/bin/deno-aarch64-apple-darwin
+            cp /tmp/deno-x64/deno src-tauri/bin/deno-x86_64-apple-darwin
+
+            # ffmpeg: static x86_64 build (runs on Apple Silicon through Rosetta 2)
+            curl -L --retry 3 --retry-delay 5 https://evermeet.cx/ffmpeg/getrelease/zip -o /tmp/ffmpeg.zip
+            unzip -o /tmp/ffmpeg.zip -d /tmp/ffmpeg
+            cp /tmp/ffmpeg/ffmpeg src-tauri/bin/ffmpeg-aarch64-apple-darwin
+            cp /tmp/ffmpeg/ffmpeg src-tauri/bin/ffmpeg-x86_64-apple-darwin
+          else
+            curl -L --retry 3 --retry-delay 5 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o src-tauri/bin/yt-dlp-x86_64-unknown-linux-gnu
+
+            # deno
+            curl -L --retry 3 --retry-delay 5 https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip -o /tmp/deno.zip
+            unzip -o /tmp/deno.zip -d /tmp/deno
+            cp /tmp/deno/deno src-tauri/bin/deno-x86_64-unknown-linux-gnu
+
+            # ffmpeg: static build
+            curl -L --retry 3 --retry-delay 5 https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz -o /tmp/ffmpeg.tar.xz
+            mkdir -p /tmp/ffmpeg
+            tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg --strip-components=1
+            cp /tmp/ffmpeg/ffmpeg src-tauri/bin/ffmpeg-x86_64-unknown-linux-gnu
           fi
+
+          chmod +x src-tauri/bin/*
+          ls -lh src-tauri/bin
+
+      - name: Download Target Sidecar Binaries (yt-dlp, ffmpeg, deno) - Windows
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path src-tauri/bin | Out-Null
+
+          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile "src-tauri/bin/yt-dlp-x86_64-pc-windows-msvc.exe"
+
+          # deno: JavaScript runtime used by yt-dlp to solve YouTube EJS challenges
+          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip" -OutFile "$env:TEMP/deno.zip"
+          Expand-Archive -Path "$env:TEMP/deno.zip" -DestinationPath "$env:TEMP/deno" -Force
+          Copy-Item "$env:TEMP/deno/deno.exe" "src-tauri/bin/deno-x86_64-pc-windows-msvc.exe"
+
+          # ffmpeg: static GPL build
+          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip" -OutFile "$env:TEMP/ffmpeg.zip"
+          Expand-Archive -Path "$env:TEMP/ffmpeg.zip" -DestinationPath "$env:TEMP/ffmpeg" -Force
+          $ffmpeg = Get-ChildItem "$env:TEMP/ffmpeg" -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
+          Copy-Item $ffmpeg.FullName "src-tauri/bin/ffmpeg-x86_64-pc-windows-msvc.exe"
+
+          Get-ChildItem src-tauri/bin | Format-Table Name, Length
 
       - name: Build Web Export for Tauri
         run: npm run build:tauri

@@ -702,7 +702,7 @@ export default function App() {
     try {
       let info: MediaInfo;
       if (isTauriApp()) {
-        info = await invoke<MediaInfo>("get_media_info", { url: url.trim() });
+        info = await invoke<MediaInfo>("get_media_info", { url: url.trim(), browserCookie: browserCookie || null });
       } else {
         const queryUrl = `/api/info?url=${encodeURIComponent(url.trim())}${browserCookie ? `&browser=${encodeURIComponent(browserCookie)}` : ""}`;
         const res = await fetch(queryUrl);
@@ -876,7 +876,7 @@ export default function App() {
             const baseName = `${mediaInfo.title || "media"}_${noteLabel}`.replace(/[^a-zA-Z0-9_-]/g, "_");
             const safeName = baseName.endsWith(`.${ext}`) ? baseName : `${baseName}.${ext}`;
             
-            const downloadApiUrl = `/api/download?url=${encodeURIComponent(url.trim())}&directUrl=${encodeURIComponent(streamUrlToUse || '')}&formatId=${encodeURIComponent(fmtToUse || '')}&audioOnly=${audioOnly}&filename=${encodeURIComponent(safeName)}`;
+            const downloadApiUrl = `/api/download?url=${encodeURIComponent(url.trim())}&directUrl=${encodeURIComponent(streamUrlToUse || '')}&formatId=${encodeURIComponent(fmtToUse || '')}&audioOnly=${audioOnly}${browserCookie ? `&browser=${encodeURIComponent(browserCookie)}` : ''}&filename=${encodeURIComponent(safeName)}`;
             
             const a = document.createElement("a");
             a.href = downloadApiUrl;

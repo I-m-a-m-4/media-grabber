@@ -3,7 +3,50 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Write;
+use std::path::PathBuf;
 use tauri_plugin_shell::ShellExt;
+
+/// Locate a bundled sidecar binary (ffmpeg / deno) next to the app executable.
+/// Release bundles ship `<name>.exe`; debug builds keep the target-triple suffix.
+fn find_sidecar_tool(name: &str) -> Option<PathBuf> {
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let suffix = std::env::consts::EXE_SUFFIX;
+
+    let direct = dir.join(format!("{}{}", name, suffix));
+    if direct.exists() {
+        return Some(direct);
+    }
+
+    for entry in std::fs::read_dir(&dir).ok()? {
+        let path = entry.ok()?.path();
+        let file_name = path.file_name()?.to_string_lossy().to_string();
+        if file_name.starts_with(name) && file_name.ends_with(suffix) {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+/// Extra yt-dlp arguments so it can use the bundled ffmpeg (format merging and
+/// MP3 extraction) and Deno (YouTube JavaScript challenges).
+fn sidecar_runtime_args() -> Vec<String> {
+    let mut args = Vec::new();
+
+    if let Some(deno) = find_sidecar_tool("deno") {
+        args.push("--js-runtimes".to_string());
+        args.push(format!("deno:{}", deno.to_string_lossy()));
+    }
+
+    if let Some(ffmpeg) = find_sidecar_tool("ffmpeg") {
+        if let Some(dir) = ffmpeg.parent() {
+            args.push("--ffmpeg-location".to_string());
+            args.push(dir.to_string_lossy().to_string());
+        }
+    }
+
+    args
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FormatInfo {
@@ -36,8 +79,10 @@ pub struct MediaInfo {
 pub async fn get_media_info(
     app_handle: tauri::AppHandle,
     url: String,
+    browser_cookie: Option<String>,
 ) -> Result<MediaInfo, String> {
     let clean_url = url.trim();
+    let cookie = browser_cookie.as_deref();
 
     // 1. Security Link Vetting & Auditing
     let security_report = vet_url(clean_url);
@@ -65,7 +110,7 @@ pub async fn get_media_info(
 
     // Attempt yt-dlp for video/audio streaming sites
     if security_report.category == "media_stream" {
-        if let Ok(info) = fetch_yt_dlp_info(&app_handle, clean_url, &security_report).await {
+        if let Ok(info) = fetch_yt_dlp_info(&app_handle, clean_url, &security_report, cookie).await {
             return Ok(info);
         }
     }
@@ -83,7 +128,7 @@ pub async fn get_media_info(
     }
 
     // 4. Engine 3: Try yt-dlp fallback (in case unknown site is supported by yt-dlp)
-    if let Ok(info) = fetch_yt_dlp_info(&app_handle, clean_url, &security_report).await {
+    if let Ok(info) = fetch_yt_dlp_info(&app_handle, clean_url, &security_report, cookie).await {
         return Ok(info);
     }
 
@@ -765,12 +810,29 @@ async fn fetch_yt_dlp_info(
     app_handle: &tauri::AppHandle,
     url: &str,
     security_report: &SecurityReport,
+    browser_cookie: Option<&str>,
 ) -> Result<MediaInfo, String> {
+    let mut args = vec![
+        "--dump-single-json".to_string(),
+        "--no-warnings".to_string(),
+        "--no-playlist".to_string(),
+    ];
+
+    if let Some(cookie) = browser_cookie {
+        if !cookie.trim().is_empty() {
+            args.push("--cookies-from-browser".to_string());
+            args.push(cookie.trim().to_string());
+        }
+    }
+
+    args.extend(sidecar_runtime_args());
+    args.push(url.to_string());
+
     let sidecar_command = app_handle
         .shell()
         .sidecar("yt-dlp")
         .map_err(|e| format!("Failed to create sidecar command: {}", e))?
-        .args(["--dump-json", url]);
+        .args(args);
 
     let output = sidecar_command
         .output()
@@ -803,6 +865,11 @@ async fn fetch_yt_dlp_info(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            let protocol = fmt
+                .get("protocol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let resolution = fmt
                 .get("resolution")
                 .and_then(|v| v.as_str())
@@ -824,6 +891,15 @@ async fn fetch_yt_dlp_info(
                 .get("format_note")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
+
+            // Skip storyboards, mhtml manifests and formats carrying no media.
+            if format_id.is_empty()
+                || ext == "mhtml"
+                || protocol == "mhtml"
+                || (vcodec == "none" && acodec == "none")
+            {
+                continue;
+            }
 
             let asset_type = if vcodec != "none" {
                 "video".to_string()
@@ -1441,7 +1517,13 @@ pub async fn download_media(
 
             if is_hls || (is_extract_audio && (d_url.contains(".mp4") || d_url.contains(".webm") || is_hls)) {
                 let output_template = format!("{}/%(title)s.%(ext)s", download_dir);
-                let mut args = vec![d_url, "-o".to_string(), output_template];
+                let mut args = vec![
+                    d_url,
+                    "-o".to_string(),
+                    output_template,
+                    "--no-playlist".to_string(),
+                ];
+                args.extend(sidecar_runtime_args());
                 if is_extract_audio {
                     args.push("-x".to_string());
                     args.push("--audio-format".to_string());
@@ -1475,7 +1557,13 @@ pub async fn download_media(
     // Otherwise use yt-dlp sidecar
     let output_template = format!("{}/%(title)s.%(ext)s", download_dir);
 
-    let mut args = vec![url, "-o".to_string(), output_template];
+    let mut args = vec![
+        url,
+        "-o".to_string(),
+        output_template,
+        "--no-playlist".to_string(),
+    ];
+    args.extend(sidecar_runtime_args());
 
     if audio_only || format_id.as_deref() == Some("yt_audio") {
         args.push("-x".to_string());
@@ -1595,12 +1683,22 @@ async fn download_direct_file(d_url: &str, download_dir: &str) -> Result<String,
         ".webp"
     } else if content_type.contains("image/gif") {
         ".gif"
+    } else if content_type.contains("image/avif") {
+        ".avif"
+    } else if content_type.contains("image/svg") {
+        ".svg"
     } else if content_type.contains("video/mp4") {
         ".mp4"
+    } else if content_type.contains("video/webm") {
+        ".webm"
     } else if content_type.contains("audio/mpeg") || content_type.contains("audio/mp3") {
         ".mp3"
+    } else if content_type.contains("audio/mp4") || content_type.contains("audio/x-m4a") {
+        ".m4a"
+    } else if content_type.contains("application/pdf") {
+        ".pdf"
     } else {
-        ".png"
+        ".bin"
     };
 
     let bytes = resp

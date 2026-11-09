@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 export const dynamic = 'force-dynamic';
@@ -18,10 +19,24 @@ function getFilenameFromUrl(url: string, defaultName = 'downloaded-asset'): stri
   return `${defaultName}_${Date.now()}.png`;
 }
 
-async function downloadWithYtDlp(pageUrl: string, formatId?: string, audioOnly?: boolean) {
-  const scratchDir = path.join(process.cwd(), 'scratch');
-  if (!fs.existsSync(scratchDir)) {
+type YtDlpResult =
+  | { ok: true; buffer: Buffer; ext: string }
+  | { ok: false; reason: 'missing' | 'failed' };
+
+async function downloadWithYtDlp(
+  pageUrl: string,
+  formatId?: string,
+  audioOnly?: boolean,
+  browserCookie?: string
+): Promise<YtDlpResult> {
+  // Serverless platforms expose a read-only filesystem outside the OS temp dir,
+  // so writing next to process.cwd() crashes with ENOENT (was: /var/task/scratch).
+  const scratchDir = path.join(os.tmpdir(), 'media-grabber-downloads');
+  try {
     fs.mkdirSync(scratchDir, { recursive: true });
+  } catch (err) {
+    console.error('Could not create scratch directory:', err);
+    return { ok: false, reason: 'failed' };
   }
 
   const isAudio = audioOnly || formatId === 'audio_best' || formatId?.includes('audio') || formatId?.includes('mp3');
@@ -32,7 +47,12 @@ async function downloadWithYtDlp(pageUrl: string, formatId?: string, audioOnly?:
   const args = [
     '--no-warnings',
     '--no-check-certificates',
+    '--no-playlist',
   ];
+
+  if (browserCookie && browserCookie.trim()) {
+    args.push('--cookies-from-browser', browserCookie.trim());
+  }
 
   if (isAudio) {
     args.push('-x', '--audio-format', 'mp3', '-o', tempFilePath);
@@ -43,8 +63,23 @@ async function downloadWithYtDlp(pageUrl: string, formatId?: string, audioOnly?:
   }
   args.push(pageUrl);
 
-  return new Promise<{ buffer: Buffer; ext: string } | null>((resolve) => {
-    const proc = spawn('yt-dlp', args);
+  return new Promise<YtDlpResult>((resolve) => {
+    let settled = false;
+    const finish = (value: YtDlpResult) => {
+      if (!settled) {
+        settled = true;
+        resolve(value);
+      }
+    };
+
+    let proc;
+    try {
+      proc = spawn('yt-dlp', args);
+    } catch (err: any) {
+      finish({ ok: false, reason: err?.code === 'ENOENT' ? 'missing' : 'failed' });
+      return;
+    }
+
     proc.stderr.on('data', () => {});
     proc.on('close', () => {
       let actualPath = tempFilePath;
@@ -63,15 +98,17 @@ async function downloadWithYtDlp(pageUrl: string, formatId?: string, audioOnly?:
           try {
             fs.unlinkSync(actualPath);
           } catch (e) {}
-          resolve({ buffer, ext: actualExt });
+          finish({ ok: true, buffer, ext: actualExt });
         } catch (e) {
-          resolve(null);
+          finish({ ok: false, reason: 'failed' });
         }
       } else {
-        resolve(null);
+        finish({ ok: false, reason: 'failed' });
       }
     });
-    proc.on('error', () => resolve(null));
+    proc.on('error', (err: any) => {
+      finish({ ok: false, reason: err?.code === 'ENOENT' ? 'missing' : 'failed' });
+    });
   });
 }
 
@@ -87,7 +124,8 @@ async function handleDownloadRequest(
   directUrl?: string,
   customFilename?: string,
   formatId?: string,
-  audioOnly?: boolean
+  audioOnly?: boolean,
+  browserCookie?: string
 ) {
   try {
     // Unwrap target URL and direct URL if proxied
@@ -132,8 +170,8 @@ async function handleDownloadRequest(
 
     if (isYtDlpTarget) {
       const ytTargetUrl = isM3u8 && actualDirectUrl ? actualDirectUrl : (actualDirectUrl || pageUrl);
-      const ytResult = await downloadWithYtDlp(ytTargetUrl, formatId, isAudio);
-      if (ytResult && ytResult.buffer.length > 0) {
+      const ytResult = await downloadWithYtDlp(ytTargetUrl, formatId, isAudio, browserCookie);
+      if (ytResult.ok && ytResult.buffer.length > 0) {
         const ext = ytResult.ext || (isAudio ? 'mp3' : 'mp4');
         let safeFilename = customFilename || `media_${Date.now()}.${ext}`;
         if (!safeFilename.endsWith(`.${ext}`)) {
@@ -154,10 +192,14 @@ async function handleDownloadRequest(
       }
 
       if (!isDirectAvailable) {
+        let ytFailure: 'missing' | 'failed' = 'failed';
+        if (!ytResult.ok) ytFailure = ytResult.reason;
         return NextResponse.json(
           {
             error:
-              'Video stream could not be downloaded via the web server proxy. For direct downloads without cloud rate-limits, please use the Media Grabber Desktop App.',
+              ytFailure === 'missing'
+                ? 'This server has no yt-dlp installed, so it cannot extract media streams for this link. Download the Desktop App to grab this video, or paste a direct file URL instead.'
+                : 'Video stream could not be downloaded via the web server proxy. For direct downloads without cloud rate-limits, please use the Media Grabber Desktop App.',
           },
           { status: 503 }
         );
@@ -192,8 +234,8 @@ async function handleDownloadRequest(
 
     if (!response.ok) {
       if (response.status === 403 || response.status === 401) {
-        const ytResult = await downloadWithYtDlp(pageUrl, formatId, audioOnly);
-        if (ytResult && ytResult.buffer.length > 0) {
+        const ytResult = await downloadWithYtDlp(pageUrl, formatId, audioOnly, browserCookie);
+        if (ytResult.ok && ytResult.buffer.length > 0) {
           const ext = ytResult.ext || (audioOnly ? 'mp3' : 'mp4');
           let safeFilename = customFilename || `media_${Date.now()}.${ext}`;
           if (!safeFilename.endsWith(`.${ext}`)) safeFilename += `.${ext}`;
@@ -259,25 +301,26 @@ export async function GET(request: Request) {
   const filename = searchParams.get('filename') || undefined;
   const formatId = searchParams.get('formatId') || undefined;
   const audioOnly = searchParams.get('audioOnly') === 'true';
+  const browserCookie = searchParams.get('browser') || undefined;
 
   if (!pageUrl && !directUrl) {
     return NextResponse.json({ message: 'Media Grabber Download Proxy Endpoint', status: 'ok' });
   }
 
-  return handleDownloadRequest(pageUrl, directUrl, filename, formatId, audioOnly);
+  return handleDownloadRequest(pageUrl, directUrl, filename, formatId, audioOnly, browserCookie);
 }
 
 export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
-    const { url, directUrl, filename, formatId, audioOnly } = body;
+    const { url, directUrl, filename, formatId, audioOnly, browserCookie } = body;
     const pageUrl = url || directUrl || '';
 
     if (!pageUrl) {
       return NextResponse.json({ error: 'Missing target URL for download' }, { status: 400 });
     }
 
-    return handleDownloadRequest(pageUrl, directUrl, filename, formatId, audioOnly);
+    return handleDownloadRequest(pageUrl, directUrl, filename, formatId, audioOnly, browserCookie);
   } catch (error: any) {
     return NextResponse.json({ error: 'Failed to process download request' }, { status: 500 });
   }

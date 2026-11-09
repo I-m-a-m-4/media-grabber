@@ -26,3 +26,7 @@ dist-ssr
 .next
 scratch/
 tsconfig.tsbuildinfo
+
+# Sidecar binaries are fetched per-platform (CI does this; see build.yml)
+src-tauri/bin/
+
