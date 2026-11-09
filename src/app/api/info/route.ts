@@ -7,18 +7,101 @@ const execFileAsync = promisify(execFile);
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+function decodeHtmlEntities(value: string): string {
+  if (!value) return value;
+  return value
+    .replace(/&#x2f;/gi, '/')
+    .replace(/&#47;/g, '/')
+    .replace(/&#0?39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+const BROWSER_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36';
+// Sites such as LinkedIn let link-preview crawlers through their bot wall.
+const PREVIEW_UA = 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)';
+
+function isBotChallenge(status: number, html: string): boolean {
+  if (status === 401 || status === 403 || status === 429 || status === 503) return true;
+  const lower = html.toLowerCase();
+  return (
+    lower.includes('attention required! | cloudflare') ||
+    lower.includes('just a moment...') ||
+    lower.includes('cf-browser-verification') ||
+    lower.includes('enable javascript and cookies to continue') ||
+    lower.includes('checking your browser before accessing')
+  );
+}
+
+function botWallMessage(pageUrl: string): string {
+  let host = '';
+  try {
+    host = new URL(pageUrl).hostname;
+  } catch (e) {}
+  if (host.includes('linkedin.com')) {
+    return 'LinkedIn blocks automated requests (Cloudflare). Open the page in your browser, right-click the logo or cover image, choose "Copy image address" and paste that URL here.';
+  }
+  if (host.includes('instagram.com')) {
+    return 'Instagram blocks automated requests for this page. Open the post in your browser, copy the image or video address and paste it here.';
+  }
+  return 'This site blocks automated access with bot protection. Open it in your browser, copy the direct image or video address and paste that URL here.';
+}
+
+type FetchedPage = { html: string; contentType: string };
+
+async function fetchPageWithFallback(pageUrl: string): Promise<FetchedPage> {
+  const baseHeaders: Record<string, string> = {
+    'User-Agent': BROWSER_UA,
+    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Upgrade-Insecure-Requests': '1',
+  };
+
+  let res: Response;
+  try {
+    res = await fetch(pageUrl, { headers: baseHeaders, signal: AbortSignal.timeout(9000) });
+  } catch (e: any) {
+    throw Object.assign(new Error(`Could not reach the page: ${e?.message || e}`), { botWall: false });
+  }
+
+  let contentType = res.headers.get('content-type') || '';
+  let body = await res.text();
+  if (res.ok && !isBotChallenge(res.status, body)) {
+    return { html: body, contentType };
+  }
+
+  // Retry behind the bot wall with a crawler UA
+  try {
+    res = await fetch(pageUrl, {
+      headers: { ...baseHeaders, 'User-Agent': PREVIEW_UA },
+      signal: AbortSignal.timeout(9000),
+    });
+    contentType = res.headers.get('content-type') || '';
+    body = await res.text();
+    if (res.ok && !isBotChallenge(res.status, body)) {
+      return { html: body, contentType };
+    }
+  } catch (e) {}
+
+  throw Object.assign(new Error(botWallMessage(pageUrl)), { botWall: true });
+}
+
 function makeAbsoluteUrl(relativeUrl: string, baseUrl: string): string {
   if (!relativeUrl) return '';
-  if (relativeUrl.startsWith('data:') || relativeUrl.startsWith('blob:') || relativeUrl.includes('iVBORw0KGgo')) {
+  const decoded = decodeHtmlEntities(relativeUrl.trim());
+  if (decoded.startsWith('data:') || decoded.startsWith('blob:') || decoded.includes('iVBORw0KGgo')) {
     return '';
   }
-  if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://') || relativeUrl.startsWith('//')) {
-    return relativeUrl.startsWith('//') ? `https:${relativeUrl}` : relativeUrl;
+  if (decoded.startsWith('http://') || decoded.startsWith('https://') || decoded.startsWith('//')) {
+    return decoded.startsWith('//') ? `https:${decoded}` : decoded;
   }
   try {
-    return new URL(relativeUrl, baseUrl).href;
+    return new URL(decoded, baseUrl).href;
   } catch (e) {
-    return relativeUrl;
+    return decoded;
   }
 }
 
@@ -1103,30 +1186,41 @@ export async function GET(request: Request) {
       file_extension: null,
     };
 
-    // Direct media file link detection (e.g. .mp4, .webm, .mkv, .mov, .mp3, .m4a, .wav)
+    // Direct media file link detection (video, audio and image files)
     const pathname = targetUrlObj.pathname.toLowerCase();
-    const directExtMatch = pathname.match(/\.(mp4|webm|mkv|mov|avi|m4v|mp3|m4a|wav|aac|flac|ogg)$/i);
+    const directExtMatch = pathname.match(
+      /\.(mp4|webm|mkv|mov|avi|m4v|mp3|m4a|wav|aac|flac|ogg|png|jpe?g|webp|gif|avif|svg)$/i
+    );
     if (directExtMatch) {
       const ext = directExtMatch[1].toLowerCase();
       const isVideo = ['mp4', 'webm', 'mkv', 'mov', 'avi', 'm4v'].includes(ext);
       const isAudio = ['mp3', 'm4a', 'wav', 'aac', 'flac', 'ogg'].includes(ext);
+      const isImage = !isVideo && !isAudio;
       const pathSegments = targetUrlObj.pathname.split('/').filter(Boolean);
       const rawName = pathSegments.length > 0 ? pathSegments[pathSegments.length - 1] : 'Direct Media';
       const cleanTitle = decodeURIComponent(rawName);
 
-      const directFormats = [
-        {
-          format_id: 'direct_file',
-          ext,
-          resolution: isVideo ? 'Original High Definition Stream' : 'Original Audio Track',
-          fps: isVideo ? 30 : null,
-          vcodec: isVideo ? 'h264' : 'none',
-          acodec: isVideo ? 'aac' : ext,
-          direct_url: url,
-          asset_type: isVideo ? 'video' : (isAudio ? 'audio' : 'video'),
-          note: isVideo ? 'Original Direct Video Stream' : 'Original Direct Audio Stream',
-        },
-      ];
+      const directAsset = {
+        format_id: isImage ? 'direct_image' : 'direct_file',
+        ext,
+        resolution: isVideo
+          ? 'Original High Definition Stream'
+          : isImage
+          ? 'Original Resolution'
+          : 'Original Audio Track',
+        fps: isVideo ? 30 : null,
+        vcodec: isVideo ? 'h264' : 'none',
+        acodec: isVideo ? 'aac' : isImage ? 'none' : ext,
+        direct_url: url,
+        asset_type: isVideo ? 'video' : isAudio ? 'audio' : 'image',
+        note: isVideo
+          ? 'Original Direct Video Stream'
+          : isImage
+          ? 'Original Image Asset'
+          : 'Original Direct Audio Stream',
+      };
+
+      const directFormats: any[] = isImage ? [] : [directAsset];
 
       if (isVideo) {
         directFormats.push({
@@ -1146,14 +1240,14 @@ export async function GET(request: Request) {
         sanitizeMediaInfo(
           {
             title: cleanTitle,
-            description: `Direct media stream file hosted on ${domain}`,
+            description: `Direct media file hosted on ${domain}`,
             extracted_text: `Direct media file: ${url}`,
-            thumbnail: undefined,
+            thumbnail: isImage ? url : undefined,
             duration: null,
             uploader: domain,
             site_name: 'Direct Media Source',
             formats: directFormats,
-            images: [],
+            images: isImage ? [directAsset] : [],
             security: {
               ...security,
               category: 'direct_media',
@@ -1494,19 +1588,85 @@ export async function GET(request: Request) {
     // GENERAL WEB PAGE SCRAPER (HTML + OpenGraph + JSON-LD)
     // -------------------------------------------------------------
     // Fetch raw HTML if images are low or title is default
+    let botWallError: string | null = null;
     if (images.length < 3 || title === `${domain} Asset`) {
       try {
-        const res = await fetch(url, {
-          signal: AbortSignal.timeout(6000),
-          headers: {
-            'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-          },
-        });
+        const page = await fetchPageWithFallback(url);
 
-        const html = await res.text();
+        // CDN links often have no file extension, so sniff the content type.
+        const ct = page.contentType.toLowerCase();
+        if (ct.startsWith('image/') || ct.startsWith('video/') || ct.startsWith('audio/')) {
+          const isImg = ct.startsWith('image/');
+          const ext = ct.includes('png')
+            ? 'png'
+            : ct.includes('webp')
+            ? 'webp'
+            : ct.includes('gif')
+            ? 'gif'
+            : ct.includes('svg')
+            ? 'svg'
+            : ct.includes('mp4')
+            ? 'mp4'
+            : ct.includes('webm')
+            ? 'webm'
+            : ct.includes('mpeg')
+            ? 'mp3'
+            : 'jpg';
+          const directName = (() => {
+            try {
+              const segs = new URL(url).pathname.split('/').filter(Boolean);
+              return decodeURIComponent(segs[segs.length - 1] || 'media_asset');
+            } catch (e) {
+              return 'media_asset';
+            }
+          })();
+
+          return NextResponse.json(
+            sanitizeMediaInfo(
+              {
+                title: directName,
+                description: `Direct media asset hosted on ${domain}`,
+                extracted_text: `Direct media file: ${url}`,
+                thumbnail: isImg ? url : undefined,
+                duration: null,
+                uploader: domain,
+                site_name: 'Direct Media Source',
+                formats: isImg
+                  ? []
+                  : [
+                      {
+                        format_id: 'direct_file',
+                        ext,
+                        resolution: 'Original Quality',
+                        vcodec: isImg ? 'none' : 'h264',
+                        acodec: isImg ? 'none' : 'aac',
+                        direct_url: url,
+                        asset_type: isImg ? 'image' : ct.startsWith('audio/') ? 'audio' : 'video',
+                        note: 'Original Direct Stream',
+                      },
+                    ],
+                images: isImg
+                  ? [
+                      {
+                        format_id: 'direct_image',
+                        ext,
+                        resolution: 'Original Resolution',
+                        vcodec: 'none',
+                        acodec: 'none',
+                        direct_url: url,
+                        asset_type: 'image',
+                        note: 'Original Image Asset',
+                      },
+                    ]
+                  : [],
+                security: { ...security, category: 'direct_media', file_extension: ext },
+              },
+              url
+            )
+          );
+        }
+
+        const html = page.html;
 
         // 1. JSON-LD parsing
         const jsonLdMatches = html.match(/<script\s+type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi);
@@ -1701,7 +1861,7 @@ export async function GET(request: Request) {
         }
 
         // 7. Extract <img> tag candidates across any website
-        const imgTagRegex = /<(?:img|source)\s+[^>]*?(?:src|data-src|srcset|data-srcset|data-original|data-highres|data-zoom-image|data-full-src)=["']([^"'\s]+)["'][^>]*>/gi;
+        const imgTagRegex = /<(?:img|source)\s+[^>]*?(?:src|data-src|srcset|data-srcset|data-original|data-highres|data-zoom-image|data-full-src|data-delayed-url|data-ghost-url)=["']([^"'\s]+)["'][^>]*>/gi;
         let match;
         let count = 0;
         while ((match = imgTagRegex.exec(html)) !== null && count < 50) {
@@ -1740,12 +1900,19 @@ export async function GET(request: Request) {
           extractedText = paragraphs.join('\n\n');
         }
       } catch (e: any) {
-        if (e?.name === 'TimeoutError' || e?.code === 'UND_ERR_CONNECT_TIMEOUT' || e?.message?.includes('timeout') || e?.cause?.code === 'UND_ERR_CONNECT_TIMEOUT') {
+        if (e?.botWall) {
+          botWallError = e.message;
+        } else if (e?.name === 'TimeoutError' || e?.code === 'UND_ERR_CONNECT_TIMEOUT' || e?.message?.includes('timeout') || e?.cause?.code === 'UND_ERR_CONNECT_TIMEOUT') {
           console.warn(`[HTML Scraper] Network timeout fetching metadata for ${domain}`);
         } else {
           console.warn(`[HTML Scraper] Network issue fetching HTML fallback for ${domain}:`, e?.message || e);
         }
       }
+    }
+
+    // Never present a bot-challenge page as if it were the real page.
+    if (botWallError && formats.length === 0 && images.length === 0) {
+      return NextResponse.json({ error: botWallError }, { status: 502 });
     }
 
     // Primary Thumbnail fallback

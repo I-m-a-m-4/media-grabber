@@ -119,11 +119,12 @@ jobs:
           Expand-Archive -Path "$env:TEMP/deno.zip" -DestinationPath "$env:TEMP/deno" -Force
           Copy-Item "$env:TEMP/deno/deno.exe" "src-tauri/bin/deno-x86_64-pc-windows-msvc.exe"
 
-          # ffmpeg: static GPL build
-          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip" -OutFile "$env:TEMP/ffmpeg.zip"
-          Expand-Archive -Path "$env:TEMP/ffmpeg.zip" -DestinationPath "$env:TEMP/ffmpeg" -Force
-          $ffmpeg = Get-ChildItem "$env:TEMP/ffmpeg" -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
-          Copy-Item $ffmpeg.FullName "src-tauri/bin/ffmpeg-x86_64-pc-windows-msvc.exe"
+          # ffmpeg: static build (gzipped single binary, same source as macOS)
+          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64.gz" -OutFile "$env:TEMP/ffmpeg.gz"
+          $in = [System.IO.File]::OpenRead("$env:TEMP/ffmpeg.gz")
+          $out = [System.IO.File]::Create("src-tauri/bin/ffmpeg-x86_64-pc-windows-msvc.exe")
+          $gz = New-Object System.IO.Compression.GzipStream($in, [System.IO.Compression.CompressionMode]::Decompress)
+          $gz.CopyTo($out); $gz.Dispose(); $out.Dispose(); $in.Dispose()
 
           Get-ChildItem src-tauri/bin | Format-Table Name, Length
 

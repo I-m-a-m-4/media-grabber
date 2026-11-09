@@ -1103,7 +1103,9 @@ async fn fetch_app_store_info(
 }
 
 fn resolve_web_url(base: &Option<url::Url>, candidate: &str) -> String {
-    let trimmed = candidate.trim();
+    // HTML often escapes query separators as &amp; which breaks signed CDN URLs.
+    let decoded = decode_html_entities(candidate.trim());
+    let trimmed = decoded.trim();
     if trimmed.starts_with("//") {
         return format!("https:{}", trimmed);
     }
@@ -1116,6 +1118,78 @@ fn resolve_web_url(base: &Option<url::Url>, candidate: &str) -> String {
         }
     }
     trimmed.to_string()
+}
+
+const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
+const PREVIEW_UA: &str = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)";
+
+/// Cloudflare and friends answer browser-shaped requests with a JS challenge
+/// page instead of the real document.
+fn looks_like_bot_challenge(status: u16, html: &str) -> bool {
+    if status == 401 || status == 403 || status == 429 || status == 503 {
+        return true;
+    }
+    let lower = html.to_lowercase();
+    lower.contains("attention required! | cloudflare")
+        || lower.contains("just a moment...")
+        || lower.contains("cf-browser-verification")
+        || lower.contains("enable javascript and cookies to continue")
+        || lower.contains("checking your browser before accessing")
+        || lower.contains("cf-error-details")
+}
+
+/// Fetch a page, retrying with a link-preview crawler user agent when the site
+/// puts a bot wall in front of normal requests (LinkedIn, X, many news sites).
+async fn fetch_page_html(client: &reqwest::Client, url: &str) -> Result<String, String> {
+    let first = client
+        .get(url)
+        .header(reqwest::header::USER_AGENT, BROWSER_UA)
+        .header(
+            reqwest::header::ACCEPT,
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
+        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch web page: {}", e))?;
+
+    let status = first.status().as_u16();
+    let body = first.text().await.unwrap_or_default();
+    if status < 400 && !looks_like_bot_challenge(status, &body) {
+        return Ok(body);
+    }
+
+    let second = client
+        .get(url)
+        .header(reqwest::header::USER_AGENT, PREVIEW_UA)
+        .header(
+            reqwest::header::ACCEPT,
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch web page: {}", e))?;
+
+    let status2 = second.status().as_u16();
+    let body2 = second.text().await.unwrap_or_default();
+    if status2 < 400 && !looks_like_bot_challenge(status2, &body2) {
+        return Ok(body2);
+    }
+
+    let domain = url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_string()))
+        .unwrap_or_default();
+
+    let hint = if domain.contains("linkedin.com") {
+        "LinkedIn blocks automated requests (Cloudflare). Open the page in your browser, right-click the logo or cover image, choose \"Copy image address\" and paste that URL here."
+    } else if domain.contains("instagram.com") {
+        "Instagram blocks automated requests for this page. Open the post in your browser, copy the image or video address and paste it here."
+    } else {
+        "This site blocks automated access with bot protection. Open it in your browser, copy the direct image or video address and paste that URL here."
+    };
+
+    Err(format!("{} (HTTP {})", hint, status2))
 }
 
 fn add_video_stream_item(
@@ -1259,17 +1333,8 @@ async fn fetch_generic_web_info(
         });
     }
 
-    // Scrape Webpage HTML
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch web page: {}", e))?;
-
-    let html = resp
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read webpage content: {}", e))?;
+    // Scrape Webpage HTML (with bot-wall fallback)
+    let html = fetch_page_html(&client, url).await?;
 
     // Extract Title
     let og_title = Regex::new(r#"(?i)<meta\s+property="og:title"\s+content="([^"]+)"#).unwrap();
@@ -1278,12 +1343,12 @@ async fn fetch_generic_web_info(
     let title = og_title
         .captures(&html)
         .and_then(|c| c.get(1))
-        .map(|m| m.as_str().to_string())
+        .map(|m| decode_html_entities(m.as_str()))
         .or_else(|| {
             title_tag
                 .captures(&html)
                 .and_then(|c| c.get(1))
-                .map(|m| m.as_str().trim().to_string())
+                .map(|m| decode_html_entities(m.as_str().trim()))
         })
         .unwrap_or_else(|| "Web Page Asset".to_string());
 
@@ -1301,7 +1366,7 @@ async fn fetch_generic_web_info(
     let mut thumbnail = og_img_re
         .captures(&html)
         .and_then(|c| c.get(1))
-        .map(|m| m.as_str().to_string());
+        .map(|m| decode_html_entities(m.as_str()));
 
     let mut images_list = Vec::new();
     let mut formats_list = Vec::new();
@@ -1438,8 +1503,11 @@ async fn fetch_generic_web_info(
         }
     }
 
-    // 6. Scrape embedded <img> tags
-    let img_src_re = Regex::new(r#"(?i)<img[^>]+src=["']([^"'\s]+)["']"#).unwrap();
+    // 6. Scrape embedded <img> tags (incl. lazy-loaded attributes)
+    let img_src_re = Regex::new(
+        r#"(?i)<(?:img|source)[^>]+(?:src|data-src|data-delayed-url|data-ghost-url|data-original)=["']([^"'\s]+)["']"#,
+    )
+    .unwrap();
     let mut img_idx = 1;
     for cap in img_src_re.captures_iter(&html) {
         if let Some(img_match) = cap.get(1) {
