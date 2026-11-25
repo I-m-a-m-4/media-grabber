@@ -3,6 +3,7 @@ import { spawn } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { fetchMediaAssetWithFallback, extFromContentType } from '@/lib/universal-extractor';
 
 export const dynamic = 'force-dynamic';
 
@@ -206,31 +207,13 @@ async function handleDownloadRequest(
       }
     }
 
-    // 2. Standard direct media asset / stream proxy fetch
+    // 2. Standard direct media asset / stream proxy fetch with dynamic Referer/Origin fallback
     let fetchUrl = actualDirectUrl || targetUrl;
     if (fetchUrl.startsWith('//')) {
       fetchUrl = `https:${fetchUrl}`;
     }
 
-    const reqHeaders: Record<string, string> = {
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      'Accept': '*/*',
-    };
-
-    if (fetchUrl.includes('instagram.com') || fetchUrl.includes('cdninstagram.com') || fetchUrl.includes('fbcdn.net') || pageUrl.includes('instagram.com')) {
-      reqHeaders['Referer'] = 'https://www.instagram.com/';
-      reqHeaders['Origin'] = 'https://www.instagram.com';
-    }
-
-    if (fetchUrl.includes('twimg.com') || fetchUrl.includes('twitter.com') || fetchUrl.includes('x.com') || pageUrl.includes('twitter.com') || pageUrl.includes('x.com')) {
-      reqHeaders['Referer'] = 'https://x.com/';
-      reqHeaders['Origin'] = 'https://x.com';
-    }
-
-    const response = await fetch(fetchUrl, {
-      headers: reqHeaders,
-    });
+    const response = await fetchMediaAssetWithFallback(fetchUrl, pageUrl, '*/*');
 
     if (!response.ok) {
       if (response.status === 403 || response.status === 401) {
@@ -261,17 +244,12 @@ async function handleDownloadRequest(
     }
 
     const contentType = response.headers.get('content-type') || 'application/octet-stream';
+    const contentLength = response.headers.get('content-length');
     let filename = customFilename || getFilenameFromUrl(fetchUrl);
 
     if (!filename.includes('.')) {
-      if (contentType.includes('png')) filename += '.png';
-      else if (contentType.includes('jpeg') || contentType.includes('jpg')) filename += '.jpg';
-      else if (contentType.includes('webp')) filename += '.webp';
-      else if (contentType.includes('gif')) filename += '.gif';
-      else if (contentType.includes('svg')) filename += '.svg';
-      else if (contentType.includes('mp4')) filename += '.mp4';
-      else if (contentType.includes('mp3')) filename += '.mp3';
-      else filename += '.bin';
+      const detected = extFromContentType(contentType);
+      filename += detected ? `.${detected.ext}` : '.bin';
     }
 
     const brandedName = formatBrandedFilename(filename);
@@ -279,6 +257,9 @@ async function handleDownloadRequest(
     const headers = new Headers();
     headers.set('Content-Type', contentType);
     headers.set('Content-Disposition', `attachment; filename="${brandedName}"`);
+    if (contentLength) {
+      headers.set('Content-Length', contentLength);
+    }
     headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
 
     return new NextResponse(response.body, {

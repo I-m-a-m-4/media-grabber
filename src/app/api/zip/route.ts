@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import JSZip from 'jszip';
+import { fetchMediaAssetWithFallback } from '@/lib/universal-extractor';
 
 export const dynamic = 'force-dynamic';
 
@@ -53,26 +54,8 @@ export async function POST(request: Request) {
           fetchUrl = `https:${fetchUrl}`;
         }
 
-        const reqHeaders: Record<string, string> = {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36',
-          'Accept': 'image/*,*/*',
-        };
-
-        if (
-          fetchUrl.includes('instagram.com') ||
-          fetchUrl.includes('cdninstagram.com') ||
-          fetchUrl.includes('fbcdn.net') ||
-          (url && url.includes('instagram.com'))
-        ) {
-          reqHeaders['Referer'] = 'https://www.instagram.com/';
-          reqHeaders['Origin'] = 'https://www.instagram.com';
-        }
-
         try {
-          const res = await fetch(fetchUrl, {
-            headers: reqHeaders,
-          });
+          const res = await fetchMediaAssetWithFallback(fetchUrl, url, 'image/*,*/*');
 
           if (!res.ok) return;
 
