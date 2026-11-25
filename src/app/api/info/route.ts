@@ -7,6 +7,7 @@ import {
   extractUniversalFromHtml,
   extFromContentType,
 } from '@/lib/universal-extractor';
+import { checkUrlSafety, checkMetadataSafety } from '@/lib/content-guard';
 
 const execFileAsync = promisify(execFile);
 
@@ -272,25 +273,62 @@ async function getYtDlpInfo(targetUrl: string, browserCookie?: string) {
     const parsed = JSON.parse(stdout.trim().split('\n')[0]);
     if (!parsed || !parsed.title) return null;
 
-    const rawFormats = parsed.formats || [];
+    const rawFormats = Array.isArray(parsed.formats) ? parsed.formats : [];
     const formats: any[] = [];
     const seenFormats = new Set<string>();
 
-    rawFormats.forEach((fmt: any) => {
+    // Sort formats so combined video+audio streams always win deduplication and appear first,
+    // followed by video-only streams (highest resolution first), then audio-only streams (highest bitrate first).
+    const sortedRawFormats = [...rawFormats].sort((a: any, b: any) => {
+      const aHasV = Boolean(a?.vcodec && a.vcodec !== 'none');
+      const aHasA = Boolean(a?.acodec && a.acodec !== 'none');
+      const bHasV = Boolean(b?.vcodec && b.vcodec !== 'none');
+      const bHasA = Boolean(b?.acodec && b.acodec !== 'none');
+
+      const aRank = aHasV && aHasA ? 3 : aHasV ? 2 : aHasA ? 1 : 0;
+      const bRank = bHasV && bHasA ? 3 : bHasV ? 2 : bHasA ? 1 : 0;
+      if (bRank !== aRank) return bRank - aRank;
+
+      if (aHasV && bHasV) {
+        const hDiff = (b.height || 0) - (a.height || 0);
+        if (hDiff !== 0) return hDiff;
+        const aMp4 = a.ext === 'mp4' ? 1 : 0;
+        const bMp4 = b.ext === 'mp4' ? 1 : 0;
+        if (bMp4 !== aMp4) return bMp4 - aMp4;
+      }
+
+      return (b.tbr || b.abr || 0) - (a.tbr || a.abr || 0);
+    });
+
+    sortedRawFormats.forEach((fmt: any) => {
       if (
         !fmt.url ||
         fmt.format_note === 'storyboard' ||
         fmt.protocol === 'mhtml' ||
         fmt.ext === 'mhtml' ||
-        (fmt.vcodec === 'none' && fmt.acodec === 'none')
+        ((!fmt.vcodec || fmt.vcodec === 'none') && (!fmt.acodec || fmt.acodec === 'none'))
       )
         return;
 
-      const isAudioOnly = (fmt.vcodec === 'none' || !fmt.vcodec) && fmt.acodec && fmt.acodec !== 'none';
+      const hasVideo = Boolean(fmt.vcodec && fmt.vcodec !== 'none');
+      const hasAudio = Boolean(fmt.acodec && fmt.acodec !== 'none');
+      const isCombined = hasVideo && hasAudio;
+      const isVideoOnly = hasVideo && !hasAudio;
+      const isAudioOnly = !hasVideo && hasAudio;
+      const isSegmented =
+        fmt.protocol === 'm3u8' ||
+        fmt.protocol === 'm3u8_native' ||
+        fmt.protocol === 'http_dash_segments' ||
+        fmt.protocol === 'dash' ||
+        String(fmt.url).includes('.m3u8') ||
+        String(fmt.url).includes('.mpd');
 
       let resolution = 'Standard';
       if (isAudioOnly) {
-        resolution = 'Audio Only (Extract MP3/M4A)';
+        const bitrate = fmt.abr || fmt.tbr;
+        resolution = bitrate
+          ? `Audio Only (${Math.round(bitrate)}kbps ${(fmt.ext || 'm4a').toUpperCase()})`
+          : 'Audio Only (Extract MP3/M4A)';
       } else if (fmt.height) {
         resolution = `${fmt.height}p`;
         if (fmt.fps && fmt.fps > 30) resolution += `${fmt.fps}`;
@@ -298,23 +336,59 @@ async function getYtDlpInfo(targetUrl: string, browserCookie?: string) {
         resolution = fmt.format_note;
       }
 
-      const key = `${resolution}_${fmt.ext}`;
+      const trackKind = isCombined ? 'av' : isVideoOnly ? 'v' : 'a';
+      const key = `${trackKind}_${resolution}_${fmt.ext}`;
       if (seenFormats.has(key)) return;
       seenFormats.add(key);
 
+      const fmtId = fmt.format_id || `fmt_${formats.length + 1}`;
+
+      // Combined non-segmented streams can be proxied directly (works on Vercel serverless too).
+      // Video-only or segmented (HLS/DASH) tracks route through /api/download so yt-dlp + ffmpeg can mux audio+video.
+      const resolvedDirectUrl =
+        isVideoOnly || isSegmented
+          ? `/api/download?url=${encodeURIComponent(targetUrl)}&formatId=${encodeURIComponent(fmtId)}${isVideoOnly ? '&mergeAudio=true' : ''}`
+          : fmt.url;
+
+      const note = isCombined
+        ? `${fmt.format_note || resolution} • Video + Audio`
+        : isVideoOnly
+        ? `${fmt.format_note || resolution} • Video Only (Auto-Merges Audio via yt-dlp/ffmpeg)`
+        : `${fmt.format_note || 'Audio Only Track'}`;
+
       formats.push({
-        format_id: fmt.format_id || `fmt_${formats.length + 1}`,
-        ext: fmt.ext || (isAudioOnly ? 'mp3' : 'mp4'),
+        format_id: fmtId,
+        ext: isVideoOnly || isSegmented ? 'mp4' : fmt.ext || (isAudioOnly ? 'mp3' : 'mp4'),
         resolution,
         fps: fmt.fps || null,
         vcodec: fmt.vcodec || 'none',
         acodec: fmt.acodec || 'none',
         filesize: fmt.filesize || fmt.filesize_approx || null,
-        note: fmt.format_note || (isAudioOnly ? 'Audio Stream' : `${resolution} Video`),
-        direct_url: fmt.url,
+        note,
+        direct_url: resolvedDirectUrl,
         asset_type: isAudioOnly ? 'audio' : 'video',
       });
     });
+
+    // If yt-dlp only returned video-only or segmented streams (no pre-merged combined video+audio),
+    // add a top "Best Combined (Video + Audio)" option that lets yt-dlp pick & merge the best streams.
+    const hasCombinedVideo = formats.some(
+      (f) => f.asset_type === 'video' && f.vcodec !== 'none' && f.acodec !== 'none'
+    );
+    const hasAnyVideo = formats.some((f) => f.asset_type === 'video');
+    if (hasAnyVideo && !hasCombinedVideo) {
+      formats.unshift({
+        format_id: 'b',
+        ext: 'mp4',
+        resolution: 'Best Combined HD (Video + Audio)',
+        fps: 30,
+        vcodec: 'h264',
+        acodec: 'aac',
+        direct_url: `/api/download?url=${encodeURIComponent(targetUrl)}&formatId=b&mergeAudio=true`,
+        asset_type: 'video',
+        note: 'Auto-Merged Best Video + Audio (Requires yt-dlp/ffmpeg)',
+      });
+    }
 
     if (targetUrl.includes('youtube.com') || targetUrl.includes('youtu.be')) {
       const hasBest = formats.some((f) => f.format_id === 'b' || f.resolution?.includes('1080'));
@@ -400,6 +474,8 @@ async function getYtDlpInfo(targetUrl: string, browserCookie?: string) {
       site_name: parsed.extractor_key || parsed.extractor || 'Video Platform',
       formats,
       images,
+      age_limit: typeof parsed.age_limit === 'number' ? parsed.age_limit : null,
+      tags: Array.isArray(parsed.tags) ? parsed.tags.map((t: any) => String(t)) : [],
     };
   } catch (err: any) {
     const msg = String(err?.message || err || '');
@@ -1117,6 +1193,30 @@ export async function GET(request: Request) {
       );
     }
 
+    // Layer 1 Content Guard: Instant Domain, TLD & URL Slug Filter (Pre-Fetch)
+    const urlGuard = checkUrlSafety(url);
+    if (urlGuard.blocked) {
+      return NextResponse.json({ error: urlGuard.reason }, { status: 403 });
+    }
+
+    // Layer 2 helper: validates extracted metadata / age_limit / HTML RTA tags before responding
+    const guardedJsonResponse = (payload: any, targetUrl: string, html?: string) => {
+      const metaGuard = checkMetadataSafety({
+        url: targetUrl,
+        title: payload?.title,
+        description: payload?.description,
+        uploader: payload?.uploader,
+        tags: payload?.tags,
+        ageLimit: payload?.age_limit,
+        html,
+      });
+      if (metaGuard.blocked) {
+        return NextResponse.json({ error: metaGuard.reason }, { status: 403 });
+      }
+      const { age_limit: _ageLimit, tags: _tags, ...cleanPayload } = payload || {};
+      return NextResponse.json(sanitizeMediaInfo(cleanPayload, targetUrl));
+    };
+
     // Detect App Store / Store domains
     const isAppStore =
       domain.includes('apps.apple.com') ||
@@ -1283,12 +1383,17 @@ export async function GET(request: Request) {
       domain.includes('linkedin.com') ||
       domain.includes('tumblr.com') ||
       domain.includes('vk.com') ||
+      domain.includes('vkvideo.ru') ||
       domain.includes('loom.com');
 
     // Fast HEAD probe for extensionless direct media URLs (CDNs, S3 presigned URLs, short links)
     if (!isMediaStream && !isAppStore) {
       const probed = await probeDirectMedia(url);
       if (probed) {
+        const redirectGuard = checkUrlSafety(probed.finalUrl);
+        if (redirectGuard.blocked) {
+          return NextResponse.json({ error: redirectGuard.reason }, { status: 403 });
+        }
         const isImg = probed.assetType === 'image';
         const isVid = probed.assetType === 'video';
         const isHlsOrDash = probed.ext === 'm3u8' || probed.ext === 'mpd';
@@ -1360,35 +1465,44 @@ export async function GET(request: Request) {
     if (domain.includes('twitter.com') || domain.includes('x.com') || url.includes('twitter.com') || url.includes('x.com')) {
       const twitterData = await getTwitterFallbackInfo(url);
       if (twitterData && (twitterData.formats?.length > 0 || twitterData.images?.length > 0)) {
-        return NextResponse.json(
-          sanitizeMediaInfo(
-            {
-              ...twitterData,
-              security: {
-                ...security,
-                category: 'media_stream',
-              },
+        return guardedJsonResponse(
+          {
+            ...twitterData,
+            security: {
+              ...security,
+              category: 'media_stream',
             },
-            url
-          )
+          },
+          url
         );
       }
     }
 
     if (isMediaStream || !isAppStore) {
       const ytData = await getYtDlpInfo(url, browserCookie);
+      if (ytData) {
+        const ytGuard = checkMetadataSafety({
+          url,
+          title: ytData.title,
+          description: ytData.description,
+          uploader: ytData.uploader,
+          tags: ytData.tags,
+          ageLimit: ytData.age_limit,
+        });
+        if (ytGuard.blocked) {
+          return NextResponse.json({ error: ytGuard.reason }, { status: 403 });
+        }
+      }
       if (ytData && ((ytData.formats && ytData.formats.length > 0) || (ytData.images && ytData.images.length > 0))) {
-        return NextResponse.json(
-          sanitizeMediaInfo(
-            {
-              ...ytData,
-              security: {
-                ...security,
-                category: 'media_stream',
-              },
+        return guardedJsonResponse(
+          {
+            ...ytData,
+            security: {
+              ...security,
+              category: 'media_stream',
             },
-            url
-          )
+          },
+          url
         );
       }
 
@@ -1396,17 +1510,15 @@ export async function GET(request: Request) {
       if (domain.includes('youtube.com') || domain.includes('youtu.be') || url.includes('youtube.com') || url.includes('youtu.be')) {
         const youtubeData = await getYouTubeFallbackInfo(url);
         if (youtubeData && (youtubeData.formats?.length > 0 || youtubeData.images?.length > 0)) {
-          return NextResponse.json(
-            sanitizeMediaInfo(
-              {
-                ...youtubeData,
-                security: {
-                  ...security,
-                  category: 'media_stream',
-                },
+          return guardedJsonResponse(
+            {
+              ...youtubeData,
+              security: {
+                ...security,
+                category: 'media_stream',
               },
-              url
-            )
+            },
+            url
           );
         }
       }
@@ -1415,17 +1527,15 @@ export async function GET(request: Request) {
       if (domain.includes('tiktok.com') || url.includes('tiktok.com')) {
         const tiktokData = await getTikTokFallbackInfo(url);
         if (tiktokData && (tiktokData.formats?.length > 0 || tiktokData.images?.length > 0)) {
-          return NextResponse.json(
-            sanitizeMediaInfo(
-              {
-                ...tiktokData,
-                security: {
-                  ...security,
-                  category: 'media_stream',
-                },
+          return guardedJsonResponse(
+            {
+              ...tiktokData,
+              security: {
+                ...security,
+                category: 'media_stream',
               },
-              url
-            )
+            },
+            url
           );
         }
       }
@@ -1434,17 +1544,15 @@ export async function GET(request: Request) {
       if (domain.includes('instagram.com') || url.includes('instagram.com')) {
         const instagramData = await getInstagramFallbackInfo(url);
         if (instagramData) {
-          return NextResponse.json(
-            sanitizeMediaInfo(
-              {
-                ...instagramData,
-                security: {
-                  ...security,
-                  category: 'media_stream',
-                },
+          return guardedJsonResponse(
+            {
+              ...instagramData,
+              security: {
+                ...security,
+                category: 'media_stream',
               },
-              url
-            )
+            },
+            url
           );
         }
       }
@@ -1453,17 +1561,15 @@ export async function GET(request: Request) {
       if (domain.includes('twitter.com') || domain.includes('x.com') || url.includes('twitter.com') || url.includes('x.com')) {
         const twitterData = await getTwitterFallbackInfo(url);
         if (twitterData && (twitterData.formats?.length > 0 || twitterData.images?.length > 0)) {
-          return NextResponse.json(
-            sanitizeMediaInfo(
-              {
-                ...twitterData,
-                security: {
-                  ...security,
-                  category: 'media_stream',
-                },
+          return guardedJsonResponse(
+            {
+              ...twitterData,
+              security: {
+                ...security,
+                category: 'media_stream',
               },
-              url
-            )
+            },
+            url
           );
         }
       }
@@ -1573,10 +1679,24 @@ export async function GET(request: Request) {
     // -------------------------------------------------------------
     // Fetch raw HTML if images are low or title is default
     let botWallError: string | null = null;
+    let fetchedHtmlForGuard = '';
     if (images.length < 3 || title === `${domain} Asset`) {
       try {
         const page = await fetchUniversalPage(url);
         const resolvedUrl = page.finalUrl || url;
+
+        // Layer 1 check on final redirected URL + Layer 2 HTML RTA meta check
+        const resolvedUrlGuard = checkUrlSafety(resolvedUrl);
+        if (resolvedUrlGuard.blocked) {
+          return NextResponse.json({ error: resolvedUrlGuard.reason }, { status: 403 });
+        }
+        if (page.html) {
+          fetchedHtmlForGuard = page.html;
+          const htmlGuard = checkMetadataSafety({ url: resolvedUrl, html: page.html });
+          if (htmlGuard.blocked) {
+            return NextResponse.json({ error: htmlGuard.reason }, { status: 403 });
+          }
+        }
 
         // CDN links often have no file extension, so sniff the content type.
         const detectedDirect = extFromContentType(page.contentType);
@@ -1744,22 +1864,21 @@ export async function GET(request: Request) {
       security.category = 'media_stream';
     }
 
-    return NextResponse.json(
-      sanitizeMediaInfo(
-        {
-          title,
-          description,
-          extracted_text: extractedText || 'No extra text content extracted.',
-          thumbnail: primaryThumbnail,
-          duration: null,
-          uploader,
-          site_name: formats.length > 0 ? (site_name || `${domain} Media`) : site_name,
-          formats,
-          images,
-          security,
-        },
-        url
-      )
+    return guardedJsonResponse(
+      {
+        title,
+        description,
+        extracted_text: extractedText || 'No extra text content extracted.',
+        thumbnail: primaryThumbnail,
+        duration: null,
+        uploader,
+        site_name: formats.length > 0 ? (site_name || `${domain} Media`) : site_name,
+        formats,
+        images,
+        security,
+      },
+      url,
+      fetchedHtmlForGuard
     );
   } catch (err: any) {
     return NextResponse.json({

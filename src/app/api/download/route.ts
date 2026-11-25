@@ -4,6 +4,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fetchMediaAssetWithFallback, extFromContentType } from '@/lib/universal-extractor';
+import { checkUrlsSafety } from '@/lib/content-guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -58,9 +59,23 @@ async function downloadWithYtDlp(
   if (isAudio) {
     args.push('-x', '--audio-format', 'mp3', '-o', tempFilePath);
   } else if (formatId && formatId !== 'b' && !formatId.startsWith('img_')) {
-    args.push('-f', `${formatId}+bestaudio/${formatId}/best/b`, '-o', tempFilePath);
+    args.push(
+      '-f',
+      `${formatId}+bestaudio[ext=m4a]/${formatId}+bestaudio/${formatId}/best[ext=mp4]/best`,
+      '--merge-output-format',
+      'mp4',
+      '-o',
+      tempFilePath
+    );
   } else {
-    args.push('-f', 'b/best', '-o', tempFilePath);
+    args.push(
+      '-f',
+      'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best',
+      '--merge-output-format',
+      'mp4',
+      '-o',
+      tempFilePath
+    );
   }
   args.push(pageUrl);
 
@@ -126,11 +141,16 @@ async function handleDownloadRequest(
   customFilename?: string,
   formatId?: string,
   audioOnly?: boolean,
-  browserCookie?: string
+  browserCookie?: string,
+  mergeAudio?: boolean
 ) {
   try {
     // Unwrap target URL and direct URL if proxied
     let actualDirectUrl = directUrl || '';
+    if (actualDirectUrl.startsWith('/api/download') && !actualDirectUrl.includes('directUrl=')) {
+      // Relative /api/download URL without an upstream directUrl means yt-dlp extraction is intended
+      actualDirectUrl = '';
+    }
     while (actualDirectUrl && actualDirectUrl.includes('directUrl=')) {
       try {
         const splitPart = actualDirectUrl.split('directUrl=')[1].split('&')[0];
@@ -154,23 +174,36 @@ async function handleDownloadRequest(
       }
     }
 
+    // Layer 1 Content Guard: Check pageUrl, directUrl, and resolved targetUrl before fetching or invoking yt-dlp
+    const downloadGuard = checkUrlsSafety(pageUrl, actualDirectUrl, targetUrl);
+    if (downloadGuard.blocked) {
+      return NextResponse.json({ error: downloadGuard.reason }, { status: 403 });
+    }
+
     const isDirectAvailable = Boolean(
+      !mergeAudio &&
       actualDirectUrl &&
       actualDirectUrl.trim().length > 0 &&
+      !actualDirectUrl.startsWith('/api/download') &&
       !actualDirectUrl.includes('googlevideo.com')
     );
 
-    const isM3u8 = actualDirectUrl.includes('.m3u8') || targetUrl.includes('.m3u8');
+    const isM3u8 =
+      actualDirectUrl.includes('.m3u8') ||
+      targetUrl.includes('.m3u8') ||
+      actualDirectUrl.includes('.mpd') ||
+      targetUrl.includes('.mpd');
     const isAudio = audioOnly || formatId === 'audio_best' || formatId?.includes('audio') || formatId?.includes('mp3');
 
-    // 1. If target is an HLS .m3u8 stream, or no direct file is available, or yt-dlp format was chosen:
+    // 1. If target needs video+audio muxing, is an HLS/DASH manifest, or has no direct file:
     const isYtDlpTarget =
+      Boolean(mergeAudio) ||
       isM3u8 ||
       !isDirectAvailable ||
       (isAudio && (actualDirectUrl.includes('.mp4') || actualDirectUrl.includes('.webm')));
 
     if (isYtDlpTarget) {
-      const ytTargetUrl = isM3u8 && actualDirectUrl ? actualDirectUrl : (actualDirectUrl || pageUrl);
+      const ytTargetUrl = isM3u8 && actualDirectUrl ? actualDirectUrl : (pageUrl || actualDirectUrl);
       const ytResult = await downloadWithYtDlp(ytTargetUrl, formatId, isAudio, browserCookie);
       if (ytResult.ok && ytResult.buffer.length > 0) {
         const ext = ytResult.ext || (isAudio ? 'mp3' : 'mp4');
@@ -282,26 +315,27 @@ export async function GET(request: Request) {
   const filename = searchParams.get('filename') || undefined;
   const formatId = searchParams.get('formatId') || undefined;
   const audioOnly = searchParams.get('audioOnly') === 'true';
+  const mergeAudio = searchParams.get('mergeAudio') === 'true';
   const browserCookie = searchParams.get('browser') || undefined;
 
   if (!pageUrl && !directUrl) {
     return NextResponse.json({ message: 'Media Grabber Download Proxy Endpoint', status: 'ok' });
   }
 
-  return handleDownloadRequest(pageUrl, directUrl, filename, formatId, audioOnly, browserCookie);
+  return handleDownloadRequest(pageUrl, directUrl, filename, formatId, audioOnly, browserCookie, mergeAudio);
 }
 
 export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
-    const { url, directUrl, filename, formatId, audioOnly, browserCookie } = body;
+    const { url, directUrl, filename, formatId, audioOnly, browserCookie, mergeAudio } = body;
     const pageUrl = url || directUrl || '';
 
     if (!pageUrl) {
       return NextResponse.json({ error: 'Missing target URL for download' }, { status: 400 });
     }
 
-    return handleDownloadRequest(pageUrl, directUrl, filename, formatId, audioOnly, browserCookie);
+    return handleDownloadRequest(pageUrl, directUrl, filename, formatId, audioOnly, browserCookie, Boolean(mergeAudio));
   } catch (error: any) {
     return NextResponse.json({ error: 'Failed to process download request' }, { status: 500 });
   }

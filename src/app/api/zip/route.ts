@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import JSZip from 'jszip';
 import { fetchMediaAssetWithFallback } from '@/lib/universal-extractor';
+import { checkUrlSafety, checkMetadataSafety } from '@/lib/content-guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,6 +12,24 @@ export async function POST(request: Request) {
 
     if (!images || !Array.isArray(images) || images.length === 0) {
       return NextResponse.json({ error: 'No images provided to zip.' }, { status: 400 });
+    }
+
+    // Layer 1 & Layer 2 Content Guard
+    const zipUrlGuard = checkUrlSafety(url);
+    if (zipUrlGuard.blocked) {
+      return NextResponse.json({ error: zipUrlGuard.reason }, { status: 403 });
+    }
+    const zipMetaGuard = checkMetadataSafety({ url, title, description, uploader });
+    if (zipMetaGuard.blocked) {
+      return NextResponse.json({ error: zipMetaGuard.reason }, { status: 403 });
+    }
+    for (const imgItem of images) {
+      if (imgItem?.direct_url) {
+        const imgGuard = checkUrlSafety(String(imgItem.direct_url));
+        if (imgGuard.blocked) {
+          return NextResponse.json({ error: imgGuard.reason }, { status: 403 });
+        }
+      }
     }
 
     const zip = new JSZip();

@@ -749,7 +749,13 @@ export default function App() {
       }
 
       if (info.formats && info.formats.length > 0) {
-        const videoFormats = info.formats.filter((f) => f.vcodec !== "none");
+        const combinedFormats = info.formats.filter(
+          (f) => f.vcodec !== "none" && f.acodec !== "none"
+        );
+        const videoFormats =
+          combinedFormats.length > 0
+            ? combinedFormats
+            : info.formats.filter((f) => f.vcodec !== "none");
         if (videoFormats.length > 0) {
           const bestFmt =
             videoFormats.find((f) => f.resolution?.includes("1080")) ||
@@ -876,7 +882,19 @@ export default function App() {
             const baseName = `${mediaInfo.title || "media"}_${noteLabel}`.replace(/[^a-zA-Z0-9_-]/g, "_");
             const safeName = baseName.endsWith(`.${ext}`) ? baseName : `${baseName}.${ext}`;
             
-            const downloadApiUrl = `/api/download?url=${encodeURIComponent(url.trim())}&directUrl=${encodeURIComponent(streamUrlToUse || '')}&formatId=${encodeURIComponent(fmtToUse || '')}&audioOnly=${audioOnly}${browserCookie ? `&browser=${encodeURIComponent(browserCookie)}` : ''}&filename=${encodeURIComponent(safeName)}`;
+            const needsMerge =
+              !audioOnly &&
+              Boolean(
+                (selectedFmtObj?.vcodec &&
+                  selectedFmtObj.vcodec !== "none" &&
+                  selectedFmtObj.acodec === "none") ||
+                  streamUrlToUse?.includes("mergeAudio=true")
+              );
+            const cleanDirectParam =
+              streamUrlToUse && !streamUrlToUse.startsWith("/api/download")
+                ? streamUrlToUse
+                : "";
+            const downloadApiUrl = `/api/download?url=${encodeURIComponent(url.trim())}&directUrl=${encodeURIComponent(cleanDirectParam)}&formatId=${encodeURIComponent(fmtToUse || '')}&audioOnly=${audioOnly}${needsMerge ? '&mergeAudio=true' : ''}${browserCookie ? `&browser=${encodeURIComponent(browserCookie)}` : ''}&filename=${encodeURIComponent(safeName)}`;
             
             const a = document.createElement("a");
             a.href = downloadApiUrl;
